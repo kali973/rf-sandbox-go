@@ -1,7 +1,7 @@
 @echo off
 setlocal EnableDelayedExpansion
 :: =============================================================================
-:: bootstrap.bat - Lanceur unique RF Sandbox Go
+:: bootstrap.bat - Lanceur unique RF Sandbox Go (Windows)
 :: Double-clic pour compiler et lancer
 :: =============================================================================
 
@@ -15,26 +15,19 @@ echo    RF Sandbox Go - Bootstrap
 echo  ==========================================
 echo.
 
-:: ── TEMP local : CMD set appelle SetEnvironmentVariable du kernel ─────────────
+:: ── TEMP local : "set" CMD appelle SetEnvironmentVariable du kernel ──────────
+:: go build herite de ce TEMP -> GetTempPath() voit .gotmp au lieu de AppData\Temp
 set "LOCALTMP=%PROJ%\.gotmp"
 if not exist "%LOCALTMP%" mkdir "%LOCALTMP%"
 set "TEMP=%LOCALTMP%"
 set "TMP=%LOCALTMP%"
 set "GOTMPDIR=%LOCALTMP%"
-echo  [*] TEMP redirige : %LOCALTMP%
-
-:: Exclusions antivirus si disponibles (ESET / Defender)
-powershell -NonInteractive -Command "Add-MpPreference -ExclusionPath '%LOCALTMP%','%PROJ%' -ErrorAction SilentlyContinue" >nul 2>&1
-if exist "%ProgramFiles%\ESET\ESET Security\ecls.exe" (
-    "%ProgramFiles%\ESET\ESET Security\ecls.exe" /exclude "%LOCALTMP%" >nul 2>&1
-    "%ProgramFiles%\ESET\ESET Security\ecls.exe" /exclude "%PROJ%" >nul 2>&1
-)
-echo  [*] Exclusions AV configurees
 
 :: Tuer les processus qui verrouillent les fichiers
 taskkill /F /IM rf-sandbox.exe >nul 2>&1
 taskkill /F /IM go.exe          >nul 2>&1
-timeout /t 1 /nobreak >nul
+:: ping remplace timeout : fonctionne meme quand stdin est redirige (IDE, CI)
+ping -n 2 127.0.0.1 >nul 2>&1
 
 :: ── Ecrire et executer le script de compilation ───────────────────────────────
 set "BUILD_BAT=%PROJ%\_build_tmp.bat"

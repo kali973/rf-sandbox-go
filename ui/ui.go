@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -40,6 +41,7 @@ var (
 	engineWarmupOnce sync.Once
 	engineWarmupDone = make(chan struct{}) // fermé quand le moteur est prêt
 	engineWarmupErr  error
+	engineWarmupMu   sync.RWMutex // protège engineWarmupErr contre les races
 )
 
 // ── Session store : garde les résultats complets en mémoire ──────────────────
@@ -184,7 +186,19 @@ func Start(cfg ServerConfig) {
 	log.Printf("Interface disponible sur http://%s", addr)
 	openBrowser("http://" + addr)
 
-	if err := http.ListenAndServe(addr, mux); err != nil {
+	// Middleware recover : capture les panics dans les handlers HTTP
+	// et les logue avec la stack trace complète au lieu de tuer le serveur.
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				log.Printf("[PANIC] %s %s : %v\n%s", r.Method, r.URL.Path, rec, debug.Stack())
+				http.Error(w, "Internal Server Error", 500)
+			}
+		}()
+		mux.ServeHTTP(w, r)
+	})
+
+	if err := http.ListenAndServe(addr, handler); err != nil {
 		log.Fatalf("serveur UI : %v", err)
 	}
 }
@@ -336,14 +350,18 @@ func startEngineWarmup(cfg ServerConfig) {
 			bestModel := ai.SelectBestModel()
 			if bestModel == "" {
 				log.Println("[WARMUP] Aucun modèle IA disponible — préchauffage ignoré")
+				engineWarmupMu.Lock()
 				engineWarmupErr = fmt.Errorf("aucun modèle disponible")
+				engineWarmupMu.Unlock()
 				return
 			}
 			log.Printf("[WARMUP] ⚡ Préchauffage moteur IA en parallèle — modèle : %s", ai.ModelDisplayName(bestModel))
 			llamaClient := ai.NewClient(bestModel, nil)
 			if err := llamaClient.EnsureReady(func(msg string) { log.Println(msg) }); err != nil {
 				log.Printf("[WARMUP] ⚠ Préchauffage échoué : %v", err)
+				engineWarmupMu.Lock()
 				engineWarmupErr = err
+				engineWarmupMu.Unlock()
 				return
 			}
 			log.Printf("[WARMUP] ✓ Moteur IA prêt — %s opérationnel", ai.ModelDisplayName(bestModel))
@@ -751,8 +769,11 @@ func generateWithAI(cfg ServerConfig, results []*models.AnalysisResult, outputPa
 		select {
 		case <-engineWarmupDone:
 			// Moteur déjà chaud depuis le préchauffage
-			if engineWarmupErr != nil {
-				engineCh <- engineResult{err: engineWarmupErr}
+			engineWarmupMu.RLock()
+			warmupErr := engineWarmupErr
+			engineWarmupMu.RUnlock()
+			if warmupErr != nil {
+				engineCh <- engineResult{err: warmupErr}
 			} else {
 				progress(ai.CInfo("[AI] ✓ Moteur IA déjà préchauffé — démarrage immédiat"))
 				engineCh <- engineResult{err: nil}
