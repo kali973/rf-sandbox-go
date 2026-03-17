@@ -1,0 +1,14 @@
+# Fichier batch RF Sandbox — un target par ligne
+# Les lignes commençant par # sont ignorées
+# Supporte fichiers locaux ET URLs
+
+# ── Fichiers locaux ─────────────────────────────────────────────
+# samples/malware.exe
+# samples/trojan.dll
+# samples/suspicious.doc
+# samples/archive.zip
+
+# ── URLs à analyser ─────────────────────────────────────────────
+# https://suspicious-domain.xyz/payload
+# http://phishing.example.com/login
+# https://cdn-delivery-fast.com/update.bin

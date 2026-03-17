@@ -1,0 +1,20 @@
+{
+  "api_token": "",
+  "proxy": "",
+  "ui_port": "8766",
+  "abuseipdb_key": "",
+  "use_geoip": false,
+  "sandbox_timeout": 600,
+  "sandbox_network": "internet",
+  "ai_model": "mistral-7b-instruct-v0.2.Q4_K_M.gguf",
+  "hf_token": "",
+  "_comments": {
+    "api_token": "Token API Recorded Future Sandbox — https://sandbox.recordedfuture.com/account",
+    "proxy": "Proxy HTTP d'entreprise, ex: http://proxy.corp.fr:8080 (NTLM auto-détecté)",
+    "abuseipdb_key": "Clé API AbuseIPDB (gratuit, 1000 req/jour) — https://www.abuseipdb.com/account/api",
+    "sandbox_timeout": "Durée d'analyse sandbox en secondes. 300=standard, 600=droppers/DLL sideloading (RECOMMANDÉ)",
+    "sandbox_network": "Accès réseau sandbox : 'internet' (défaut), 'drop' (coupé), 'tor' (via Tor)",
+    "ai_model": "Modèle IA actif — nom du fichier GGUF dans moteur/models/. Options: mistral-7b-instruct-v0.2.Q4_K_M.gguf | Qwen2.5-14B-Instruct-Q4_K_M.gguf | Llama-Primus-8B-Q4_K_M.gguf",
+    "hf_token": "Token Hugging Face pour télécharger les modèles gated (ex: Primus). Créer sur https://huggingface.co/settings/tokens — sera chiffré automatiquement via le vault au prochain save"
+  }
+}

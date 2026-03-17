@@ -1,0 +1,2768 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RF Sandbox — Analyseur de menaces</title>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg:      #080b12;
+      --bg2:     #0d1117;
+      --bg3:     #131820;
+      --bg4:     #1a2030;
+      --border:  #1e2840;
+      --border2: #252f45;
+      --accent:  #3b82f6;
+      --accent-glow: rgba(59,130,246,.18);
+      --accent2: #8b5cf6;
+      --green:   #10b981;
+      --red:     #ef4444;
+      --orange:  #f59e0b;
+      --yellow:  #fbbf24;
+      --text:    #e2e8f0;
+      --text2:   #94a3b8;
+      --text3:   #475569;
+      --mono: 'IBM Plex Mono', 'Courier New', monospace;
+      --sans: 'IBM Plex Sans', 'Segoe UI', sans-serif;
+      --sidebar-w: 220px;
+      --header-h: 56px;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; overflow: hidden; }
+    body { background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 14px; display: flex; flex-direction: column; }
+
+    /* ── TOPBAR ── */
+    .topbar {
+      height: var(--header-h); flex-shrink: 0;
+      background: var(--bg2); border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; padding: 0 20px; gap: 16px;
+      position: relative; z-index: 200;
+    }
+    .topbar-logo {
+      width: 34px; height: 34px;
+      background: linear-gradient(135deg, #1e3a6e, #2563eb);
+      border-radius: 8px; display: flex; align-items: center; justify-content: center;
+      font-family: var(--mono); font-weight: 700; font-size: 11px; color: #fff;
+      letter-spacing: -.5px; flex-shrink: 0;
+      box-shadow: 0 0 12px rgba(37,99,235,.4);
+    }
+    .topbar-title { font-size: 15px; font-weight: 700; color: var(--text); letter-spacing: -.3px; }
+    .topbar-subtitle { font-size: 12px; color: var(--text3); margin-top: 1px; }
+    .topbar-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+    .topbar-pill {
+      font-size: 11px; font-family: var(--mono); padding: 3px 10px;
+      border-radius: 20px; border: 1px solid var(--border2);
+      color: var(--text3); background: var(--bg3);
+    }
+    .topbar-pill.live { border-color: rgba(16,185,129,.35); color: var(--green); background: rgba(16,185,129,.07); }
+    .topbar-pill.live::before { content:'●'; margin-right:5px; animation: blink 2s infinite; }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+    .topbar-pill.warn { border-color: rgba(245,158,11,.35); color: var(--orange); background: rgba(245,158,11,.07); }
+
+    /* ── LAYOUT ── */
+    .layout { flex: 1; display: flex; overflow: hidden; }
+    .sidebar {
+      width: var(--sidebar-w); flex-shrink: 0;
+      background: var(--bg2); border-right: 1px solid var(--border);
+      display: flex; flex-direction: column; overflow-y: auto;
+    }
+    .sidebar-section { padding: 20px 12px 8px; }
+    .sidebar-label {
+      font-size: 10px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: .12em; color: var(--text3); padding: 0 8px; margin-bottom: 4px;
+    }
+    .nav-item {
+      display: flex; align-items: center; gap: 10px; padding: 9px 12px;
+      border-radius: 8px; cursor: pointer; font-size: 13px; color: var(--text2);
+      font-weight: 500; transition: all .15s; border: 1px solid transparent;
+    }
+    .nav-item:hover { background: var(--bg3); color: var(--text); }
+    .nav-item.active { background: var(--accent-glow); color: #93c5fd; border-color: rgba(59,130,246,.25); }
+    .nav-icon { font-size: 15px; width: 20px; text-align: center; flex-shrink: 0; }
+    .nav-badge {
+      margin-left: auto; background: var(--accent); color: #fff;
+      font-size: 10px; font-family: var(--mono); padding: 1px 6px; border-radius: 10px;
+    }
+    .nav-badge.red { background: var(--red); }
+
+    /* ── MAIN ── */
+    .main { flex: 1; overflow-y: auto; padding: 28px 32px; }
+    .page { display: none; }
+    .page.active { display: block; }
+
+    /* ── CARDS ── */
+    .card {
+      background: var(--bg2); border: 1px solid var(--border); border-radius: 12px;
+      padding: 20px; margin-bottom: 16px;
+    }
+    .card-title { font-size: 13px; font-weight: 600; color: var(--text2); margin-bottom: 16px; letter-spacing: .03em; }
+
+    /* ── STATS GRID ── */
+    .stats-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 12px; margin-bottom: 24px; }
+    .stat-card {
+      background: var(--bg2); border: 1px solid var(--border); border-radius: 10px;
+      padding: 16px 20px;
+    }
+    .stat-val { font-size: 28px; font-weight: 700; font-family: var(--mono); color: var(--text); line-height: 1; }
+    .stat-val.red { color: var(--red); }
+    .stat-val.orange { color: var(--orange); }
+    .stat-val.green { color: var(--green); }
+    .stat-label { font-size: 11px; color: var(--text3); margin-top: 6px; text-transform: uppercase; letter-spacing: .08em; }
+
+    /* ── SUBMIT FORM ── */
+    .submit-tabs { display: flex; gap: 4px; margin-bottom: 20px; }
+    .submit-tab {
+      padding: 7px 16px; border-radius: 6px; font-size: 13px; cursor: pointer;
+      border: 1px solid var(--border2); color: var(--text2); background: var(--bg3);
+      transition: all .15s;
+    }
+    .submit-tab.active { background: var(--accent-glow); border-color: rgba(59,130,246,.35); color: #93c5fd; }
+    .submit-panel { display: none; }
+    .submit-panel.active { display: block; }
+
+    .form-row { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 12px; }
+    .form-group { display: flex; flex-direction: column; gap: 6px; flex: 1; }
+    label { font-size: 12px; color: var(--text2); font-weight: 500; }
+    input[type=text], input[type=password], textarea, select {
+      background: var(--bg3); border: 1px solid var(--border2); border-radius: 6px;
+      color: var(--text); padding: 8px 12px; font-size: 13px; font-family: var(--sans);
+      outline: none; transition: border-color .15s;
+    }
+    input[type=text]:focus, input[type=password]:focus, textarea:focus, select:focus {
+      border-color: var(--accent);
+    }
+    textarea { resize: vertical; min-height: 80px; }
+
+    /* Drop zone */
+    .drop-zone {
+      border: 2px dashed var(--border2); border-radius: 10px; padding: 32px;
+      text-align: center; cursor: pointer; transition: all .2s; position: relative;
+    }
+    .drop-zone:hover, .drop-zone.drag { border-color: var(--accent); background: var(--accent-glow); }
+    .drop-zone input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+    .drop-icon { font-size: 32px; margin-bottom: 8px; }
+    .drop-text { font-size: 13px; color: var(--text2); }
+    .drop-hint { font-size: 11px; color: var(--text3); margin-top: 4px; }
+    .drop-files { list-style: none; text-align: left; margin-top: 12px; }
+    .drop-files li {
+      font-size: 12px; font-family: var(--mono); color: var(--green);
+      padding: 2px 0; display: flex; align-items: center; gap: 6px;
+    }
+    .drop-files li::before { content: '✓'; }
+
+    /* Checkboxes */
+    .check-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .check-row input[type=checkbox] { accent-color: var(--accent); width: 15px; height: 15px; }
+    .check-row label { font-size: 13px; color: var(--text2); margin: 0; cursor: pointer; }
+
+    /* Buttons */
+    .btn {
+      padding: 9px 20px; border-radius: 7px; font-size: 13px; font-weight: 600;
+      cursor: pointer; border: none; transition: all .15s; display: inline-flex;
+      align-items: center; gap: 6px;
+    }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover { background: #2563eb; }
+    .btn-primary:disabled { background: var(--bg4); color: var(--text3); cursor: not-allowed; }
+    .btn-secondary { background: var(--bg3); border: 1px solid var(--border2); color: var(--text2); }
+    .btn-secondary:hover { background: var(--bg4); color: var(--text); }
+    .btn-danger { background: rgba(239,68,68,.12); border: 1px solid rgba(239,68,68,.3); color: var(--red); }
+    .btn-danger:hover { background: rgba(239,68,68,.2); }
+    .btn-sm { padding: 5px 12px; font-size: 12px; }
+
+    /* ── RESULTS TABLE ── */
+    .results-table { width: 100%; border-collapse: collapse; }
+    .results-table th {
+      font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em;
+      color: var(--text3); padding: 8px 12px; text-align: left;
+      border-bottom: 1px solid var(--border); white-space: nowrap;
+    }
+    .results-table td { padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 13px; }
+    .results-table tr:hover td { background: var(--bg3); }
+    .results-table tr:last-child td { border-bottom: none; }
+
+    /* Score badge */
+    .score-badge {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 34px; height: 34px; border-radius: 8px; font-family: var(--mono);
+      font-weight: 700; font-size: 14px;
+    }
+    .score-10 { background: rgba(239,68,68,.15); color: #f87171; border: 1px solid rgba(239,68,68,.3); }
+    .score-high { background: rgba(245,158,11,.15); color: #fbbf24; border: 1px solid rgba(245,158,11,.3); }
+    .score-med { background: rgba(234,179,8,.1); color: #facc15; border: 1px solid rgba(234,179,8,.25); }
+    .score-low { background: rgba(16,185,129,.1); color: var(--green); border: 1px solid rgba(16,185,129,.25); }
+    .score-zero { background: var(--bg3); color: var(--text3); border: 1px solid var(--border); }
+
+    /* Tags */
+    .tag {
+      display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 4px;
+      font-size: 11px; font-family: var(--mono); font-weight: 500; margin: 1px;
+    }
+    .tag-red { background: rgba(239,68,68,.1); color: #f87171; border: 1px solid rgba(239,68,68,.2); }
+    .tag-orange { background: rgba(245,158,11,.1); color: var(--orange); border: 1px solid rgba(245,158,11,.2); }
+    .tag-blue { background: rgba(59,130,246,.1); color: #93c5fd; border: 1px solid rgba(59,130,246,.2); }
+    .tag-gray { background: var(--bg3); color: var(--text3); border: 1px solid var(--border2); }
+
+    .status-dot {
+      display: inline-flex; align-items: center; gap: 5px; font-size: 12px;
+    }
+    .status-dot::before {
+      content: '●'; font-size: 8px;
+    }
+    .status-dot.reported { color: var(--green); }
+    .status-dot.pending { color: var(--orange); }
+    .status-dot.failed { color: var(--red); }
+    .status-dot.error { color: var(--red); }
+
+    /* ── DETAIL PANEL ── */
+    .detail-panel {
+      position: fixed; top: var(--header-h); right: 0; bottom: 0; width: 560px;
+      background: var(--bg2); border-left: 1px solid var(--border);
+      overflow-y: auto; z-index: 100; transform: translateX(100%);
+      transition: transform .25s ease;
+    }
+    .detail-panel.open { transform: translateX(0); }
+    .detail-header {
+      padding: 20px 24px 16px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: flex-start; gap: 14px; position: sticky; top: 0;
+      background: var(--bg2); z-index: 1;
+    }
+    .detail-close {
+      margin-left: auto; background: none; border: none; color: var(--text3);
+      cursor: pointer; font-size: 18px; padding: 0 4px;
+    }
+    .detail-close:hover { color: var(--text); }
+    .detail-body { padding: 20px 24px; }
+    .detail-section { margin-bottom: 24px; }
+    .detail-section-title {
+      font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .1em;
+      color: var(--text3); margin-bottom: 12px; padding-bottom: 6px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    /* Hash display */
+    .hash-row { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+    .hash-key { font-size: 11px; color: var(--text3); width: 48px; flex-shrink: 0; font-family: var(--mono); }
+    .hash-val { font-size: 12px; font-family: var(--mono); color: var(--text2); word-break: break-all; flex: 1; }
+
+    /* Signature list */
+    .sig-item {
+      padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border);
+      margin-bottom: 6px; background: var(--bg3);
+    }
+    .sig-header { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+    .sig-label { font-size: 13px; font-weight: 500; color: var(--text); flex: 1; }
+    .sig-score {
+      font-family: var(--mono); font-size: 12px; font-weight: 600;
+      padding: 2px 7px; border-radius: 5px;
+    }
+    .sig-score.crit { background: rgba(239,68,68,.15); color: #f87171; }
+    .sig-score.high { background: rgba(245,158,11,.15); color: var(--orange); }
+    .sig-score.med { background: rgba(234,179,8,.1); color: #facc15; }
+    .sig-desc { font-size: 12px; color: var(--text2); margin-top: 4px; }
+    .sig-ttp { font-size: 11px; font-family: var(--mono); color: var(--accent); margin-top: 4px; }
+
+    /* IOC table */
+    .ioc-group { margin-bottom: 12px; }
+    .ioc-group-title { font-size: 11px; font-weight: 600; color: var(--text3); margin-bottom: 6px; text-transform: uppercase; letter-spacing: .05em; }
+    .ioc-item {
+      font-size: 12px; font-family: var(--mono); color: var(--text2);
+      padding: 4px 8px; background: var(--bg3); border-radius: 4px; margin-bottom: 3px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .ioc-copy { background: none; border: none; color: var(--text3); cursor: pointer; font-size: 11px; margin-left: auto; }
+    .ioc-copy:hover { color: var(--accent); }
+
+    /* Network flows */
+    .flow-row {
+      font-size: 12px; font-family: var(--mono); padding: 6px 0;
+      border-bottom: 1px solid var(--border); display: flex; gap: 8px; align-items: center;
+    }
+    .flow-row:last-child { border-bottom: none; }
+    .flow-dest { color: var(--text2); flex: 1; }
+    .flow-domain { color: var(--orange); font-size: 11px; }
+    .flow-country { font-size: 10px; color: var(--text3); }
+
+    /* ── CONFIG PAGE ── */
+    .config-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .config-section { background: var(--bg3); border: 1px solid var(--border); border-radius: 10px; padding: 20px; }
+    .config-section-title { font-size: 13px; font-weight: 600; color: var(--text2); margin-bottom: 16px; }
+    .form-hint { font-size: 11px; color: var(--text3); margin-top: 4px; }
+
+    /* Vault status */
+    .vault-status {
+      display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+      border-radius: 8px; font-size: 13px; margin-bottom: 12px;
+    }
+    .vault-status.ok { background: rgba(16,185,129,.08); border: 1px solid rgba(16,185,129,.2); color: var(--green); }
+    .vault-status.warn { background: rgba(245,158,11,.08); border: 1px solid rgba(245,158,11,.2); color: var(--orange); }
+
+    /* ── TOAST ── */
+    .toast-container { position: fixed; bottom: 20px; right: 20px; z-index: 9000; display: flex; flex-direction: column; gap: 8px; }
+    .toast {
+      padding: 10px 16px; border-radius: 8px; font-size: 13px; font-weight: 500;
+      display: flex; align-items: center; gap: 8px; min-width: 240px;
+      animation: slideIn .2s ease;
+    }
+    .toast.success { background: rgba(16,185,129,.15); border: 1px solid rgba(16,185,129,.3); color: var(--green); }
+    .toast.error { background: rgba(239,68,68,.15); border: 1px solid rgba(239,68,68,.3); color: var(--red); }
+    .toast.info { background: rgba(59,130,246,.15); border: 1px solid rgba(59,130,246,.3); color: #93c5fd; }
+    @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+    /* ── SPINNER ── */
+    .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border2); border-top-color: var(--accent); border-radius: 50%; animation: spin .6s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── QUEUE ── */
+    .queue-item {
+      display: flex; align-items: center; gap: 12px; padding: 10px 14px;
+      border-radius: 8px; border: 1px solid var(--border); margin-bottom: 6px;
+      background: var(--bg3);
+    }
+    .queue-name { font-size: 13px; color: var(--text); flex: 1; font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .queue-status { font-size: 11px; color: var(--text3); display: flex; align-items: center; gap: 5px; }
+
+    /* ── EMPTY STATE ── */
+    .empty-state { text-align: center; padding: 60px 20px; }
+    .empty-icon { font-size: 40px; margin-bottom: 12px; opacity: .4; }
+    .empty-text { font-size: 14px; color: var(--text3); }
+
+    /* ── PAGE HEADERS ── */
+    .page-header { margin-bottom: 24px; }
+    .page-title { font-size: 22px; font-weight: 700; color: var(--text); letter-spacing: -.3px; }
+    .page-subtitle { font-size: 13px; color: var(--text3); margin-top: 4px; }
+
+    /* ── SCROLLBAR ── */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+
+    /* ── PROGRESS BAR ── */
+    .progress-bar { width: 100%; height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; }
+    .progress-fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width .3s ease; }
+
+    /* ── CODE ── */
+    pre { background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-size: 12px; font-family: var(--mono); color: var(--text2); overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+    code { font-family: var(--mono); font-size: 12px; background: var(--bg3); padding: 1px 5px; border-radius: 3px; color: var(--text2); }
+
+    /* ── OVERLAY ── */
+    .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 50; display: none; }
+    .overlay.open { display: block; }
+
+    /* ── Toggles ON/OFF ─────────────────────────────────────────────── */
+    .toggle-row {
+      display:flex; align-items:center; justify-content:space-between;
+      padding:10px 0; border-bottom:1px solid var(--border);
+    }
+    .toggle-row:last-child { border-bottom:none; }
+    .toggle-label { font-size:13px; color:var(--text2); flex:1; }
+    .toggle-label small { display:block; font-size:11px; color:var(--text3); margin-top:2px; }
+    .toggle-switch {
+      position:relative; width:40px; height:22px; flex-shrink:0;
+    }
+    .toggle-switch input { opacity:0; width:0; height:0; }
+    .toggle-slider {
+      position:absolute; cursor:pointer; inset:0;
+      background:var(--bg4); border-radius:22px;
+      transition:.25s; border:1px solid var(--border2);
+    }
+    .toggle-slider:before {
+      content:""; position:absolute; height:16px; width:16px;
+      left:2px; bottom:2px; background:#fff; border-radius:50%;
+      transition:.25s; box-shadow:0 1px 3px rgba(0,0,0,.3);
+    }
+    .toggle-switch input:checked + .toggle-slider { background:var(--accent); border-color:var(--accent); }
+    .toggle-switch input:checked + .toggle-slider:before { transform:translateX(18px); }
+
+    /* ── Loupe logs flottante ───────────────────────────────────────── */
+    #log-fab {
+      position:fixed; bottom:24px; right:24px; z-index:900;
+      width:46px; height:46px; border-radius:50%;
+      background:var(--accent); color:#fff; border:none;
+      font-size:20px; cursor:pointer; box-shadow:0 4px 16px rgba(0,0,0,.35);
+      display:flex; align-items:center; justify-content:center;
+      transition:transform .15s, box-shadow .15s;
+    }
+    #log-fab:hover { transform:scale(1.1); box-shadow:0 6px 20px rgba(0,0,0,.45); }
+    #log-fab .badge-fab {
+      position:absolute; top:-4px; right:-4px;
+      background:var(--red); color:#fff; border-radius:10px;
+      font-size:10px; font-weight:700; padding:1px 5px;
+      display:none;
+    }
+
+    /* ── Fenetre flottante logs ─────────────────────────────────────── */
+    #log-floater {
+      position:fixed; z-index:950;
+      bottom:80px; right:24px;
+      width:420px; max-width:calc(100vw - 32px);
+      height:240px;
+      background:var(--bg2); border:1px solid var(--border2);
+      border-radius:12px; box-shadow:0 12px 40px rgba(0,0,0,.55);
+      display:none; flex-direction:column; overflow:hidden;
+      resize:both;
+    }
+    #log-floater.visible { display:flex; }
+    #log-floater-bar {
+      display:flex; align-items:center; gap:8px;
+      padding:8px 12px; background:var(--bg3);
+      border-bottom:1px solid var(--border);
+      cursor:move; user-select:none; flex-shrink:0;
+    }
+    #log-floater-bar .dot { width:8px;height:8px;border-radius:50%;background:#6b7280; }
+    #log-floater-bar .dot.live { background:var(--green); box-shadow:0 0 6px var(--green); }
+    #log-floater-title { font-size:12px; font-weight:600; color:var(--text2); flex:1; }
+    #log-floater-body {
+      flex:1; overflow-y:auto;
+      font-family:var(--mono); font-size:.75rem; line-height:1.6;
+      background:#ffffff; color:#1e293b;
+      padding:10px 14px; white-space:pre-wrap; word-break:break-all;
+      border-top:1px solid var(--border);
+    }
+    #log-floater-footer {
+      display:flex; gap:6px; padding:6px 10px;
+      background:var(--bg3); border-top:1px solid var(--border); flex-shrink:0;
+    }
+
+
+  /* ── README Markdown styles ─────────────────────────────────────── */
+  #readme-content h1 { font-size:1.6rem; font-weight:700; margin:0 0 20px; padding-bottom:10px; border-bottom:2px solid var(--border); color:var(--text); }
+  #readme-content h2 { font-size:1.2rem; font-weight:700; margin:32px 0 12px; padding-bottom:6px; border-bottom:1px solid var(--border); color:var(--text); }
+  #readme-content h3 { font-size:1rem; font-weight:600; margin:20px 0 8px; color:var(--text); }
+  #readme-content p  { margin:0 0 12px; color:var(--text2); }
+  #readme-content ul, #readme-content ol { margin:0 0 12px 20px; color:var(--text2); }
+  #readme-content li { margin-bottom:4px; }
+  #readme-content code { background:var(--bg3); border:1px solid var(--border); border-radius:4px; padding:1px 6px; font-family:'Consolas','Fira Mono',monospace; font-size:12px; color:#93c5fd; }
+  #readme-content pre { background:var(--bg3); border:1px solid var(--border); border-radius:8px; padding:16px; overflow-x:auto; margin:0 0 16px; }
+  #readme-content pre code { background:none; border:none; padding:0; color:#e2e8f0; font-size:12px; }
+  #readme-content table { width:100%; border-collapse:collapse; margin:0 0 16px; font-size:13px; }
+  #readme-content th { background:var(--bg3); padding:8px 12px; text-align:left; border:1px solid var(--border); font-weight:600; color:var(--text); }
+  #readme-content td { padding:8px 12px; border:1px solid var(--border); color:var(--text2); }
+  #readme-content tr:nth-child(even) td { background:var(--bg2); }
+  #readme-content blockquote { border-left:3px solid var(--accent); margin:0 0 12px; padding:8px 16px; background:var(--bg3); color:var(--text2); border-radius:0 6px 6px 0; }
+  #readme-content a { color:#93c5fd; text-decoration:none; }
+  #readme-content a:hover { text-decoration:underline; }
+  #readme-content hr { border:none; border-top:1px solid var(--border); margin:24px 0; }
+  #readme-content strong { color:var(--text); }
+
+  /* ── TOOLTIPS ───────────────────────────────────────────────────────── */
+  [data-tip] { position: relative; cursor: help; }
+  [data-tip]::after {
+    content: attr(data-tip);
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: #0f172a;
+    color: #e2e8f0;
+    font-size: 12px;
+    font-family: var(--sans);
+    font-weight: 400;
+    line-height: 1.5;
+    padding: 8px 12px;
+    border-radius: 8px;
+    border: 1px solid #1e2840;
+    white-space: pre-wrap;
+    max-width: 280px;
+    width: max-content;
+    z-index: 9999;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity .15s ease, transform .15s ease;
+    transform: translateX(-50%) translateY(4px);
+    box-shadow: 0 8px 24px rgba(0,0,0,.5);
+    text-align: left;
+  }
+  [data-tip]:hover::after {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+  /* Tooltip à droite pour les éléments en bord gauche */
+  [data-tip-right]::after {
+    left: calc(100% + 8px);
+    bottom: auto;
+    top: 50%;
+    transform: translateY(-50%) translateX(4px);
+  }
+  [data-tip-right]:hover::after {
+    transform: translateY(-50%) translateX(0);
+  }
+  /* Flèche du tooltip */
+  [data-tip]::before {
+    content: '';
+    position: absolute;
+    bottom: calc(100% + 2px);
+    left: 50%;
+    transform: translateX(-50%);
+    border: 5px solid transparent;
+    border-top-color: #1e2840;
+    z-index: 9999;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity .15s ease;
+  }
+  [data-tip]:hover::before { opacity: 1; }
+
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body>
+
+<!-- TOPBAR -->
+<div class="topbar">
+  <div class="topbar-logo">RF</div>
+  <div>
+    <div class="topbar-title">RF Sandbox</div>
+    <div class="topbar-subtitle">Analyseur de menaces</div>
+  </div>
+  <div class="topbar-right">
+    <div class="topbar-pill" id="pill-token">⚙ Config requise</div>
+    <div class="topbar-pill live" id="pill-status" style="display:none">Connecté</div>
+    <div class="topbar-pill warn" id="pill-proxy" style="display:none">Proxy actif</div>
+  </div>
+</div>
+
+<!-- LAYOUT -->
+<div class="layout">
+
+  <!-- SIDEBAR -->
+  <nav class="sidebar">
+    <div class="sidebar-section">
+      <div class="sidebar-label">Navigation</div>
+      <div class="nav-item active" id="nav-dashboard" onclick="showPage('dashboard')" data-tip="Vue d'ensemble : statistiques globales,&#10;analyses récentes et familles détectées">
+        <span class="nav-icon">📊</span> Tableau de bord
+      </div>
+      <div class="nav-item" id="nav-submit" onclick="showPage('submit')" data-tip="Soumettre un fichier, une URL, un ID&#10;existant ou un batch de cibles à analyser">
+        <span class="nav-icon">📤</span> Soumettre
+      </div>
+      <div class="nav-item" id="nav-results" onclick="showPage('results')" data-tip="Résultats de toutes vos analyses :&#10;scores, familles, IOCs, signatures MITRE">
+        <span class="nav-icon">🔬</span> Résultats
+        <span class="nav-badge" id="badge-results" style="display:none">0</span>
+      </div>
+      <div class="nav-item" id="nav-queue" onclick="showPage('queue')" data-tip="Analyses en cours de traitement&#10;(soumission → polling → résultats)">
+        <span class="nav-icon">⏳</span> File d'attente
+        <span class="nav-badge red" id="badge-queue" style="display:none">0</span>
+      </div>
+    </div>
+    <div class="sidebar-section">
+      <div class="sidebar-label">Système</div>
+      <div class="nav-item" id="nav-audit" onclick="showPage('audit')" data-tip="Audit de sécurité du code source :&#10;gosec · govulncheck · gitleaks">
+        <span class="nav-icon">🛡</span> Sécurité
+        <span class="nav-badge red" id="badge-audit" style="display:none">!</span>
+      </div>
+      <div class="nav-item" id="nav-reporting" onclick="showPage('reporting'); loadReportingList()" data-tip="Rapports IA archivés dans reporting/&#10;Téléchargez les rapports générés">
+        <span class="nav-icon">📁</span> Rapports IA
+        <span class="nav-badge" id="badge-reporting" style="display:none;background:var(--accent)">0</span>
+      </div>
+      <div class="nav-item" id="nav-config" onclick="showPage('config')" data-tip="Token API, proxy, vault AES-256,&#10;enrichissements et options d'analyse">
+        <span class="nav-icon">⚙</span> Configuration
+      </div>
+      <div class="nav-item" id="nav-logs" onclick="showPage('logs')" data-tip="Logs applicatifs en temps réel via SSE :&#10;erreurs, retries, enrichissements">
+        <span class="nav-icon">🖥</span> Logs
+      </div>
+      <div class="nav-item" id="nav-readme" onclick="showPage('readme')" data-tip="README.md — architecture, installation,&#10;utilisation et référence API">
+        <span class="nav-icon">📖</span> Documentation
+      </div>
+    </div>
+  </nav>
+
+  <!-- MAIN CONTENT -->
+  <main class="main">
+
+    <!-- ═══════════════════════════════════ DASHBOARD ═══════════════════════ -->
+    <div class="page active" id="page-dashboard">
+      <div class="page-header" style="display:flex;align-items:center;flex-wrap:wrap;gap:12px">
+        <div>
+          <div class="page-title">Tableau de bord</div>
+          <div class="page-subtitle" id="dash-date">—</div>
+        </div>
+        <button class="btn btn-secondary btn-sm" onclick="showPage('readme')" title="Lire la documentation" style="margin-left:auto;display:flex;align-items:center;gap:6px;">
+          <span>📖</span> Documentation
+        </button>
+      </div>
+
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-val" id="stat-total">0</div>
+          <div class="stat-label">Analyses totales</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-val red" id="stat-critical">0</div>
+          <div class="stat-label">Score 10 / Critique</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-val orange" id="stat-high">0</div>
+          <div class="stat-label">Score 7-9 / Élevé</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-val green" id="stat-clean">0</div>
+          <div class="stat-label">Score ≤ 3 / Propre</div>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+        <div class="card">
+          <div class="card-title">ANALYSES RÉCENTES</div>
+          <div id="dash-recent">
+            <div class="empty-state">
+              <div class="empty-icon">🔬</div>
+              <div class="empty-text">Aucune analyse pour le moment.<br>Soumettez un fichier ou une URL.</div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">FAMILLES DE MALWARE DÉTECTÉES</div>
+          <div id="dash-families">
+            <div class="empty-state">
+              <div class="empty-icon">🧬</div>
+              <div class="empty-text">Aucune famille détectée.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════ SOUMETTRE ═══════════════════════ -->
+    <div class="page" id="page-submit">
+      <div class="page-header">
+        <div class="page-title">Soumettre pour analyse</div>
+        <div class="page-subtitle">Fichiers malveillants, URLs suspectes ou IDs sandbox existants</div>
+      </div>
+
+      <div class="card">
+        <div class="submit-tabs">
+          <div class="submit-tab active" onclick="switchSubmitTab('file')" data-tip="Glissez-déposez un ou plusieurs fichiers&#10;(PE, Office, PDF, archives, scripts...)">📁 Fichier(s)</div>
+          <div class="submit-tab" onclick="switchSubmitTab('url')" data-tip="Soumettre une ou plusieurs URLs&#10;suspectes (http/https), une par ligne">🌐 URL(s)</div>
+          <div class="submit-tab" onclick="switchSubmitTab('id')" data-tip="Récupérer les résultats d'une analyse&#10;déjà existante via son ID sandbox">🔑 ID existant</div>
+          <div class="submit-tab" onclick="switchSubmitTab('batch')" data-tip="Charger un fichier .txt contenant&#10;plusieurs cibles (# = commentaire)">📋 Batch</div>
+        </div>
+
+        <!-- File tab -->
+        <div class="submit-panel active" id="panel-file">
+          <div class="drop-zone" id="drop-zone" ondragover="onDragOver(event)" ondragleave="onDragLeave(event)" ondrop="onDrop(event)">
+            <input type="file" id="file-input" multiple onchange="onFileSelect(event)">
+            <div class="drop-icon">📂</div>
+            <div class="drop-text">Glissez-déposez vos fichiers ici</div>
+            <div class="drop-hint">ou cliquez pour parcourir • Tous types de fichiers</div>
+            <ul class="drop-files" id="file-list"></ul>
+          </div>
+        </div>
+
+        <!-- URL tab -->
+        <div class="submit-panel" id="panel-url">
+          <div class="form-group">
+            <label>URLs à analyser (une par ligne)</label>
+            <textarea id="url-input" placeholder="https://evil.com/payload.exe&#10;https://phish.example.com/index.html" rows="5"></textarea>
+          </div>
+        </div>
+
+        <!-- ID tab -->
+        <div class="submit-panel" id="panel-id">
+          <div class="form-group">
+            <label>IDs sandbox existants (un par ligne)</label>
+            <textarea id="id-input" placeholder="230615-abc12emotet&#10;230710-xyz99ransom" rows="5"></textarea>
+          </div>
+        </div>
+
+        <!-- Batch tab -->
+        <div class="submit-panel" id="panel-batch">
+          <div class="form-group">
+            <label>Fichier batch (un fichier/URL par ligne, # = commentaire)</label>
+            <div class="drop-zone" id="batch-zone" ondragover="onDragOver(event)" ondragleave="onDragLeave(event)" ondrop="onBatchDrop(event)">
+              <input type="file" id="batch-input" accept=".txt" onchange="onBatchSelect(event)">
+              <div class="drop-icon">📋</div>
+              <div class="drop-text">Fichier .txt batch</div>
+              <div class="drop-hint" id="batch-hint">Glissez ou cliquez pour sélectionner</div>
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
+          <div class="check-row">
+            <input type="checkbox" id="chk-private" checked>
+            <label for="chk-private" data-tip="Si coché : l'analyse n'est visible que par&#10;vous (et votre organisation). Si décoché :&#10;visible par tous les utilisateurs RF Sandbox.">Soumission privée (non partagée dans la base publique)</label>
+          </div>
+          <div class="form-row" style="margin-top:12px">
+            <div id="panel-file-hint" style="font-size:12px;color:var(--text3);display:flex;align-items:center;gap:6px">
+              ⚡ L'analyse démarre automatiquement dès le dépôt des fichiers
+            </div>
+            <button class="btn btn-primary" onclick="submitAnalysis()" id="btn-submit" style="display:none"
+              data-tip="Lance l'analyse sur RF Sandbox :&#10;soumission → attente résultats → enrichissement">
+              <span>🚀</span> Lancer l'analyse
+            </button>
+            <button class="btn btn-secondary" onclick="clearSubmitForm()" data-tip="Efface tous les fichiers et URLs&#10;sélectionnés dans le formulaire">Effacer</button>
+            <div id="submit-progress" style="display:none;flex:1;align-items:center;gap:10px">
+              <div class="spinner"></div>
+              <span id="submit-progress-text" style="font-size:13px;color:var(--text2)">Soumission en cours...</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Output JSON export -->
+      <div class="card">
+        <div class="card-title">EXPORT JSON</div>
+        <div class="form-row">
+          <div class="form-group">
+            <label data-tip="Chemin relatif où sauvegarder le JSON&#10;après l'analyse (optionnel).&#10;Ex: output/resultats.json">Chemin du fichier JSON de sortie (optionnel)</label>
+            <input type="text" id="json-out" placeholder="output/resultats.json">
+          </div>
+          <div class="form-group" style="max-width:200px">
+            <label data-tip="Traffic Light Protocol — niveau de&#10;confidentialité du rapport généré.&#10;WHITE=public · RED=confidentiel">Classification TLP</label>
+            <select id="tlp-select">
+              <option value="TLP:WHITE">TLP:WHITE</option>
+              <option value="TLP:GREEN">TLP:GREEN</option>
+              <option value="TLP:AMBER">TLP:AMBER</option>
+              <option value="TLP:RED">TLP:RED</option>
+            </select>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════ RÉSULTATS ═══════════════════════ -->
+    <div class="page" id="page-results">
+      <div class="page-header">
+        <div class="page-title">Résultats d'analyse</div>
+        <div class="page-subtitle" id="results-subtitle">Aucun résultat</div>
+      </div>
+
+      <div style="display:flex;gap:8px;margin-bottom:16px;align-items:center">
+        <input type="text" id="results-search" placeholder="🔍 Rechercher par nom, famille, hash..." style="flex:1" oninput="filterResults()">
+        <select id="results-filter-score" onchange="filterResults()" style="max-width:160px">
+          <option value="">Tous les scores</option>
+          <option value="10">Score 10 (critique)</option>
+          <option value="high">Score 7-9 (élevé)</option>
+          <option value="med">Score 4-6 (moyen)</option>
+          <option value="low">Score 0-3 (faible)</option>
+        </select>
+        <button class="btn btn-secondary btn-sm" onclick="exportResults()" data-tip="Exporte tous les résultats visibles&#10;en fichier JSON téléchargeable">⬇ Exporter JSON</button>
+        <button class="btn btn-danger btn-sm" onclick="clearResults()" data-tip="Supprime tous les résultats de la session&#10;(l'historique RF Sandbox n'est pas affecté)">🗑 Vider</button>
+      </div>
+
+      <div class="card" style="padding:0;overflow:hidden">
+        <div id="results-empty" class="empty-state">
+          <div class="empty-icon">🔬</div>
+          <div class="empty-text">Aucun résultat.<br>Soumettez des fichiers ou des URLs pour commencer.</div>
+        </div>
+        <table class="results-table" id="results-table" style="display:none">
+          <thead>
+            <tr>
+              <th style="width:40px">Score</th>
+              <th>Nom / Target</th>
+              <th>Famille</th>
+              <th>Tags</th>
+              <th>Hashes</th>
+              <th>Statut</th>
+              <th style="width:80px"></th>
+            </tr>
+          </thead>
+          <tbody id="results-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════ FILE D'ATTENTE ═══════════════════ -->
+    <div class="page" id="page-queue">
+      <div class="page-header">
+        <div class="page-title">File d'attente</div>
+        <div class="page-subtitle">Analyses en cours de traitement</div>
+      </div>
+      <div class="card">
+        <div id="queue-empty" class="empty-state">
+          <div class="empty-icon">✅</div>
+          <div class="empty-text">File d'attente vide.<br>Toutes les analyses sont terminées.</div>
+        </div>
+        <div id="queue-list"></div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════ LOGS ══════════════════════════════ -->
+    <div class="page" id="page-logs">
+      <div class="page-header">
+        <div class="page-title">Logs applicatifs</div>
+        <div class="page-subtitle">Flux en temps réel — diagnostics et erreurs</div>
+      </div>
+      <div class="card" style="padding:0;overflow:hidden;">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:1px solid var(--border);background:var(--bg2);">
+          <span style="font-weight:600;font-size:.85rem;letter-spacing:.05em;color:var(--text-muted);text-transform:uppercase;">Console</span>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <span id="log-status-dot" style="width:8px;height:8px;border-radius:50%;background:#6b7280;display:inline-block;"></span>
+            <span id="log-status-txt" style="font-size:.78rem;color:var(--text-muted);">Déconnecté</span>
+            <button class="btn btn-secondary btn-sm" onclick="clearLogs()" style="margin-left:8px;" data-tip="Efface le contenu de la console">🗑 Effacer</button>
+            <button class="btn btn-secondary btn-sm" onclick="copyLogs()" data-tip="Copie tous les logs dans le presse-papiers">📋 Copier</button>
+          </div>
+        </div>
+        <div id="log-output" style="
+          background:#ffffff;
+          color:#1e293b;
+          font-family:'Consolas','Fira Mono',monospace;
+          font-size:.8rem;
+          line-height:1.6;
+          height:520px;
+          overflow-y:auto;
+          padding:14px 18px;
+          white-space:pre-wrap;
+          word-break:break-all;
+          border-top:1px solid var(--border);
+        "></div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════ CONFIGURATION ═══════════════════ -->
+    <!-- ══ PAGE REPORTING ══ -->
+    <div class="page" id="page-reporting">
+      <div class="page-header">
+        <div class="page-title">📁 Rapports IA archivés</div>
+        <div class="page-subtitle" id="reporting-subtitle">Chargement...</div>
+      </div>
+      <div class="card" style="padding:0;overflow:hidden">
+        <div id="reporting-empty" class="empty-state" style="display:none">
+          <div class="empty-icon">📄</div>
+          <div class="empty-text">Aucun rapport archivé.<br>Les rapports sont générés automatiquement après chaque analyse.</div>
+        </div>
+        <table id="reporting-table" style="width:100%;border-collapse:collapse;display:none">
+          <thead>
+            <tr style="background:var(--surface2);font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase">
+              <th style="padding:10px 14px;text-align:left">Date</th>
+              <th style="padding:10px 14px;text-align:left">Fichier</th>
+              <th style="padding:10px 14px;text-align:center">Type</th>
+              <th style="padding:10px 14px;text-align:right">Taille</th>
+              <th style="padding:10px 14px;text-align:center">Action</th>
+            </tr>
+          </thead>
+          <tbody id="reporting-tbody"></tbody>
+        </table>
+      </div>
+      <div style="margin-top:12px;display:flex;gap:8px">
+        <button class="btn btn-secondary btn-sm" onclick="loadReportingList()">↺ Actualiser</button>
+      </div>
+    </div>
+
+    <div class="page" id="page-config">
+      <div class="page-header">
+        <div class="page-title">Configuration</div>
+        <div class="page-subtitle">Paramètres API et sécurité</div>
+      </div>
+
+      <div class="config-grid">
+        <!-- API config -->
+        <div class="config-section">
+          <div class="config-section-title">🔑 Connexion API</div>
+          <div class="form-group" style="margin-bottom:12px">
+            <label data-tip="Token Bearer fourni par RF Sandbox.&#10;Format : chaîne alphanumérique.&#10;Sera chiffré AES-256 par le vault.">Token API RF Sandbox</label>
+            <div style="display:flex;gap:8px">
+              <input type="password" id="cfg-token" placeholder="Votre token API" style="flex:1">
+              <button class="btn btn-secondary btn-sm" onclick="toggleTokenVis()" data-tip="Afficher/masquer le token en clair">👁</button>
+            </div>
+            <div class="form-hint">Champ chiffré automatiquement par le vault lors de la sauvegarde</div>
+          </div>
+          <div class="form-group" style="margin-bottom:12px">
+            <label data-tip="Proxy HTTP/HTTPS d'entreprise.&#10;L'authentification NTLM Windows&#10;est gérée automatiquement.">Proxy HTTP (optionnel)</label>
+            <input type="text" id="cfg-proxy" placeholder="http://proxy.corp.fr:8080">
+            <div class="form-hint">Laissez vide pour connexion directe • Authentification NTLM automatique</div>
+          </div>
+          <div class="form-group" style="margin-bottom:16px">
+            <label data-tip="Port TCP sur lequel l'interface web&#10;sera accessible (défaut : 8766).&#10;Ex: http://localhost:8766">Port de l'interface web</label>
+            <input type="text" id="cfg-port" placeholder="8766">
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn btn-primary btn-sm" onclick="saveConfig()" data-tip="Sauvegarde dans config/config.json&#10;et chiffre les secrets via le vault">💾 Sauvegarder</button>
+            <button class="btn btn-secondary btn-sm" onclick="testConnection()" data-tip="Vérifie que le token API est valide&#10;en appelant GET /api/v0/samples">🔌 Tester connexion</button>
+          </div>
+          <div id="cfg-status" style="margin-top:10px;font-size:13px;color:var(--text3)"></div>
+        </div>
+
+        <!-- Vault -->
+        <div class="config-section">
+          <div class="config-section-title">🔒 Vault (chiffrement AES-256)</div>
+          <div class="vault-status warn" id="vault-status-box">
+            <span>⚠</span> État du vault non vérifié
+          </div>
+          <p style="font-size:13px;color:var(--text2);margin-bottom:16px;line-height:1.6">
+            Le vault protège vos secrets (token API) avec AES-256-GCM.<br>
+            La clé est stockée dans <code>config/.vault.key</code> (gitignore).
+          </p>
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <button class="btn btn-secondary btn-sm" onclick="encryptToken()" data-tip="Chiffre le token saisi avec AES-256-GCM&#10;et stocke le résultat enc:... dans config.json">🔐 Chiffrer le token</button>
+            <button class="btn btn-secondary btn-sm" onclick="vaultStatus()" data-tip="Vérifie si la clé vault est présente&#10;et liste les champs chiffrés dans config.json">📋 État du vault</button>
+          </div>
+          <div id="vault-output" style="margin-top:12px;display:none">
+            <pre id="vault-output-text"></pre>
+          </div>
+        </div>
+      </div>
+
+
+        <!-- Analyse & Rapport -->
+        <div class="config-section">
+          <div class="config-section-title">🧠 Analyse &amp; Rapport</div>
+
+          <div class="toggle-row">
+            <div class="toggle-label" data-tip="Récupère les descriptions officielles&#10;des techniques ATT&CK (T1059, T1055...)&#10;depuis la base MITRE pour chaque TTP détecté">
+              Enrichissement MITRE ATT&CK
+              <small>Récupère les descriptions officielles des techniques d'attaque détectées</small>
+            </div>
+            <label class="toggle-switch">
+              <input type="checkbox" id="tog-mitre" checked onchange="saveToggles()">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+
+          <div class="toggle-row">
+            <div class="toggle-label" data-tip="Interroge AbuseIPDB pour chaque IP&#10;contactée par le malware et ajoute&#10;son score de réputation dans le rapport">
+              Enrichissement AbuseIPDB
+              <small>Vérifie la réputation des IPs contactées par le malware</small>
+            </div>
+            <label class="toggle-switch">
+              <input type="checkbox" id="tog-abuseipdb" checked onchange="saveToggles()">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+
+          <div class="form-group" style="margin:14px 0 10px">
+            <label data-tip="Clé gratuite sur abuseipdb.com.&#10;Permet 1000 lookups/jour.&#10;Sans clé, l'enrichissement est désactivé.">Clé API AbuseIPDB <span style="color:var(--text3);font-weight:400">(gratuite)</span></label>
+            <div style="display:flex;gap:8px">
+              <input type="password" id="cfg-abuseipdb" placeholder="Votre clé AbuseIPDB" style="flex:1">
+              <button class="btn btn-secondary btn-sm" onclick="toggleAbuseVis()" data-tip="Afficher/masquer la clé">👁</button>
+            </div>
+            <div class="form-hint"><a href="https://www.abuseipdb.com/register" target="_blank" style="color:var(--accent)">Créer un compte gratuit</a> · 1 000 requêtes/jour · Aucune carte bancaire</div>
+          </div>
+
+          <!-- ── Moteur IA ──────────────────────────────────────────────── -->
+          <div class="form-group" style="margin-top:14px">
+            <label style="font-weight:500;display:flex;align-items:center;gap:8px">
+              🤖 Moteur IA (modèle GGUF local)
+              <span id="ai-model-status" style="font-size:11px;font-weight:400;color:var(--text3)">Chargement...</span>
+            </label>
+            <div id="ai-model-list" style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+              <div style="color:var(--text3);font-size:13px">Chargement du catalogue...</div>
+            </div>
+            <div class="form-hint" style="margin-top:8px">
+              Le modèle sélectionné est utilisé pour la génération des rapports forensic IA.
+              Les modèles absents peuvent être téléchargés automatiquement depuis Hugging Face.
+            </div>
+          </div>
+
+                    <!-- ── Primus 8B direct download (public, sans token) ────── -->
+          <div class="form-group" style="margin-top:14px;border:1px solid var(--border);border-radius:10px;padding:14px 16px;background:var(--bg2)" id="hf-token-section">
+
+            <div style="font-weight:500;font-size:13px;margin-bottom:10px;display:flex;align-items:center;gap:8px">
+              🤖 Trend Micro Primus 8B — Téléchargement direct
+              <span id="primus-file-badge" style="font-size:10px;padding:1px 8px;border-radius:4px;background:#3a2a1a;color:#f97316">⬇ Absent</span>
+            </div>
+
+            <div style="font-size:11px;color:var(--text3);line-height:1.7;margin-bottom:12px">
+              GGUF Q4_K_M quantisé par <a href="https://huggingface.co/tensorblock/Llama-Primus-Merged-GGUF" target="_blank" style="color:var(--accent)">TensorBlock</a>
+              — <b style="color:var(--text-primary)">public, sans compte ni token</b>.
+              Cliquez sur <b>⬇ Télécharger</b> dans la liste ci-dessus, ou utilisez la commande ci-dessous.
+            </div>
+
+            <div style="display:flex;gap:4px;margin-bottom:6px">
+              <button class="btn btn-sm" id="tab-ps" onclick="switchDlTab('ps')"
+                style="font-size:11px;padding:3px 10px;background:var(--accent);color:#fff;border-radius:4px">
+                PowerShell
+              </button>
+              <button class="btn btn-sm" id="tab-linux" onclick="switchDlTab('linux')"
+                style="font-size:11px;padding:3px 10px;background:var(--bg2);color:var(--text3);border-radius:4px">
+                Linux / WSL
+              </button>
+            </div>
+
+            <div id="dl-cmd-ps" style="position:relative">
+              <pre id="dl-cmd-ps-code" style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px 12px;font-size:10.5px;font-family:monospace;white-space:pre-wrap;word-break:break-all;margin:0;color:var(--text-primary)">curl.exe -L "https://huggingface.co/tensorblock/Llama-Primus-Merged-GGUF/resolve/main/Llama-Primus-Merged-Q3_K_M.gguf" -o "moteur\models\Llama-Primus-8B-Q3_K_M.gguf"</pre>
+              <button onclick="copyDlCmd('ps')" title="Copier"
+                style="position:absolute;top:6px;right:6px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;padding:2px 8px;font-size:10px;cursor:pointer;color:var(--text3)">
+                📋 Copier
+              </button>
+            </div>
+
+            <div id="dl-cmd-linux" style="display:none;position:relative">
+              <pre id="dl-cmd-linux-code" style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px 12px;font-size:10.5px;font-family:monospace;white-space:pre-wrap;word-break:break-all;margin:0;color:var(--text-primary)">curl -L "https://huggingface.co/tensorblock/Llama-Primus-Merged-GGUF/resolve/main/Llama-Primus-Merged-Q3_K_M.gguf" -o moteur/models/Llama-Primus-8B-Q3_K_M.gguf</pre>
+              <button onclick="copyDlCmd('linux')" title="Copier"
+                style="position:absolute;top:6px;right:6px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;padding:2px 8px;font-size:10px;cursor:pointer;color:var(--text3)">
+                📋 Copier
+              </button>
+            </div>
+
+            <div style="margin-top:10px;display:flex;align-items:center;gap:8px">
+              <button class="btn btn-secondary btn-sm" onclick="checkPrimusPresence()" style="font-size:11px">
+                🔄 Vérifier si le fichier est arrivé
+              </button>
+              <span id="primus-check-msg" style="font-size:11px;color:var(--text3)"></span>
+            </div>
+
+            <div style="border-top:1px solid var(--border);margin-top:14px;padding-top:12px">
+              <label style="font-size:12px;color:var(--text3);margin-bottom:4px;display:block">
+                🔑 Token Hugging Face <span style="font-weight:400">(optionnel — futurs modèles gated)</span>
+              </label>
+              <div style="display:flex;gap:8px">
+                <input type="password" id="cfg-hf-token"
+                  placeholder="hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                  style="flex:1;font-family:monospace;font-size:12px">
+                <button class="btn btn-secondary btn-sm" onclick="toggleHFTokenVis()" title="Afficher/masquer">👁</button>
+              </div>
+              <div class="form-hint" style="margin-top:4px">
+                Chiffré automatiquement via le vault.
+                <a href="https://huggingface.co/settings/tokens" target="_blank" style="color:var(--accent)">Créer un token</a>
+              </div>
+            </div>
+          </div>
+
+          <div class="toggle-row" style="margin-top:6px">
+            <div class="toggle-label" data-tip="Sauvegarde chaque analyse dans une base&#10;SQLite locale pour construire la mémoire&#10;des analyses passées (indépendant de l'injection IA)">
+              🧠 Base de connaissances — Mémorisation
+              <small>Enregistre chaque analyse dans la base locale <code>knowledge/analyses.db</code></small>
+            </div>
+            <label class="toggle-switch">
+              <input type="checkbox" id="tog-knowledge" checked onchange="saveToggles()">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+          <div class="toggle-row" style="margin-top:2px; padding-left:16px; border-left: 2px solid var(--border)">
+            <div class="toggle-label" data-tip="Injecte les analyses similaires passées&#10;dans le prompt IA pour enrichir le contexte.&#10;Désactivé par défaut : peut biaiser l'analyse&#10;si les entrées en base sont peu nombreuses.">
+              ↳ Injecter le contexte dans le prompt IA
+              <small>OFF par défaut — active uniquement si la base contient des analyses fiables</small>
+            </div>
+            <label class="toggle-switch">
+              <input type="checkbox" id="tog-knowledge-inject" onchange="saveToggles()">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+          <div class="toggle-row" style="margin-top:6px">
+            <div class="toggle-label" data-tip="Géolocalise chaque IP contactée via&#10;ip-api.com (gratuit, sans clé, 100 req/min).&#10;Ajoute pays et ville dans le rapport.">
+              🌍 Géolocalisation IP
+              <small>ip-api.com (gratuit, sans clé, 100 req/min) — localise les serveurs C2 dans le rapport</small>
+            </div>
+            <label class="toggle-switch">
+              <input type="checkbox" id="tog-geoip" onchange="saveToggles(); autoSaveGeoIP()">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+
+          <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn btn-primary btn-sm" onclick="saveAnalysisConfig()" data-tip="Sauvegarde la clé AbuseIPDB et les&#10;options d'analyse dans config.json">💾 Sauvegarder</button>
+            <button class="btn btn-secondary btn-sm" id="btn-knowledge-stats" onclick="loadKnowledgeStats()" data-tip="Affiche le nombre d'analyses mémorisées&#10;dans la base de connaissances SQLite">📊 Stats base</button>
+            <button class="btn btn-warning btn-sm" id="btn-launch-training" onclick="launchTraining()" data-tip="Fine-tuning LoRA de Mistral 7B — 100% Go, zéro Python.&#10;• Export dataset automatique&#10;• llama-finetune natif (même zip que llama-server)&#10;• Logs en temps réel dans la loupe 🔍">🧠 Entraîner les IA</button>
+          </div>
+          <div id="knowledge-stats"  style="margin-top:10px;font-size:12px;color:var(--text3);display:none"></div>
+          <div id="training-status"  style="margin-top:10px;font-size:12px;display:none"></div>
+        </div>
+
+      <!-- Config JSON viewer -->
+      <div class="card" style="margin-top:16px">
+        <div class="card-title">CONFIG.JSON (lecture seule)</div>
+        <pre id="config-raw">Chargement...</pre>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════ PAGE SÉCURITÉ ═══════════════════════ -->
+    <div class="page" id="page-audit">
+      <div class="page-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
+        <div>
+          <div class="page-title">🛡 Audit de Sécurité</div>
+          <div class="page-subtitle">Analyse statique du code source — gosec · govulncheck · gitleaks</div>
+        </div>
+        <button class="btn btn-primary" id="btn-run-audit" onclick="runAudit()" data-tip="Lance gosec (analyse statique Go),&#10;govulncheck (CVE dépendances) et&#10;gitleaks (détection de secrets)">
+          ▶ Lancer l'audit
+        </button>
+        <button class="btn btn-secondary" id="btn-ai-audit" onclick="runAIAuditReport()" style="display:none"
+          data-tip="Envoie le rapport d'audit au moteur IA local&#10;pour générer une analyse professionnelle enrichie">
+          🤖 Rapport IA
+        </button>
+      </div>
+
+      <!-- Statut de l'audit en cours -->
+      <div id="audit-running" style="display:none;margin-bottom:20px">
+        <div style="display:flex;align-items:center;gap:10px;padding:14px 18px;background:var(--bg3);border:1px solid var(--border);border-radius:10px">
+          <div class="spinner" style="width:18px;height:18px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 0.8s linear infinite;flex-shrink:0"></div>
+          <span id="audit-status-msg" style="font-size:13px;color:var(--text2)">Audit en cours…</span>
+        </div>
+      </div>
+
+      <!-- Résultat dernier audit -->
+      <div id="audit-result-banner" style="display:none;margin-bottom:20px"></div>
+
+      <!-- Layout: liste rapports + visionneuse -->
+      <div style="display:grid;grid-template-columns:280px 1fr;gap:16px;height:calc(100vh - 220px)">
+
+        <!-- Liste des rapports -->
+        <div style="display:flex;flex-direction:column;gap:0;background:var(--bg2);border:1px solid var(--border);border-radius:10px;overflow:hidden">
+          <div style="padding:12px 14px;border-bottom:1px solid var(--border);font-size:12px;font-weight:600;color:var(--text3);letter-spacing:.05em;text-transform:uppercase">
+            Rapports générés
+          </div>
+          <div id="audit-report-list" style="flex:1;overflow-y:auto;padding:8px">
+            <div style="padding:20px;text-align:center;color:var(--text3);font-size:13px">
+              Aucun rapport.<br>Lancez un audit pour commencer.
+            </div>
+          </div>
+          <div style="padding:10px;border-top:1px solid var(--border)">
+            <button class="btn btn-secondary btn-sm" onclick="loadAuditReports()" style="width:100%">↺ Actualiser</button>
+          </div>
+        </div>
+
+        <!-- Visionneuse PDF -->
+        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:10px;overflow:hidden;display:flex;flex-direction:column">
+          <div id="audit-viewer-header" style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-bottom:1px solid var(--border);background:var(--bg3)">
+            <span id="audit-viewer-title" style="font-size:13px;color:var(--text2)">Sélectionnez un rapport</span>
+            <div style="display:flex;gap:8px">
+              <button id="btn-download-pdf" class="btn btn-secondary btn-sm" onclick="downloadCurrentPdf()" style="display:none">⬇ Télécharger</button>
+            </div>
+          </div>
+          <div id="audit-viewer-empty" style="flex:1;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;color:var(--text3)">
+            <span style="font-size:40px;opacity:.3">📄</span>
+            <span style="font-size:13px">Aucun rapport sélectionné</span>
+          </div>
+          <iframe id="audit-pdf-frame"
+            style="flex:1;border:none;display:none;background:#fff"
+            title="Rapport d'audit PDF">
+          </iframe>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════ PAGE DOCUMENTATION ══════════════════════ -->
+    <div class="page" id="page-readme">
+      <div class="page-header">
+        <div class="page-title">📖 Documentation</div>
+        <div class="page-subtitle">README — architecture, configuration, utilisation</div>
+      </div>
+      <div class="card" style="padding:0;overflow:hidden;">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:1px solid var(--border);background:var(--bg2);">
+          <span style="font-weight:600;font-size:.85rem;letter-spacing:.05em;color:var(--text-muted);text-transform:uppercase;">README.md</span>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-secondary btn-sm" onclick="reloadReadme()">↺ Recharger</button>
+          </div>
+        </div>
+        <div id="readme-content"
+          style="padding:32px 40px;max-width:900px;margin:0 auto;line-height:1.7;color:var(--text);font-size:14px;min-height:300px;">
+          <div style="color:var(--text-muted);font-size:13px;">Chargement...</div>
+        </div>
+      </div>
+    </div>
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!-- ═════════════════════════════════════════════════════════════════ -->
+
+  </main>
+
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+  <!-- PAGE SÉCURITÉ                                                       -->
+  <!-- ═══════════════════════════════════════════════════════════════════ -->
+</div>
+
+<!-- DETAIL PANEL -->
+<div class="overlay" id="overlay" onclick="closeDetail()"></div>
+<div class="detail-panel" id="detail-panel">
+  <div class="detail-header">
+    <div>
+      <div style="font-size:16px;font-weight:700;color:var(--text)" id="detail-title">—</div>
+      <div style="font-size:12px;color:var(--text3);margin-top:3px;font-family:var(--mono)" id="detail-id">—</div>
+    </div>
+    <button class="detail-close" onclick="closeDetail()">✕</button>
+  </div>
+  <div class="detail-body" id="detail-body"></div>
+</div>
+
+
+<!-- LOUPE LOGS FLOTTANTE -->
+<button id="log-fab" onclick="toggleLogFloater()" title="Afficher/masquer les logs en temps réel" data-tip="Ouvre la fenêtre flottante de logs&#10;(glissable et redimensionnable)">
+  🔍<span class="badge-fab" id="fab-badge"></span>
+</button>
+
+<div id="log-floater">
+  <div id="log-floater-bar" onmousedown="startDragFloater(event)">
+    <span class="dot" id="floater-dot"></span>
+    <span id="log-floater-title">Logs applicatifs — temps réel</span>
+    <button class="btn btn-secondary btn-sm" onclick="clearFloaterLogs()" style="padding:2px 8px;font-size:11px;">🗑</button>
+    <button class="btn btn-secondary btn-sm" onclick="copyLogs()" style="padding:2px 8px;font-size:11px;">📋</button>
+    <button onclick="toggleLogFloater()" style="background:none;border:none;color:var(--text3);cursor:pointer;font-size:14px;padding:0 4px;">✕</button>
+  </div>
+  <div id="log-floater-body"></div>
+  <div id="log-floater-footer">
+    <span id="floater-status" style="font-size:11px;color:var(--text3);flex:1;align-self:center;"></span>
+    <button class="btn btn-secondary btn-sm" onclick="scrollFloaterBottom()" style="font-size:11px;">⬇ Bas</button>
+  </div>
+</div>
+
+<!-- TOASTS -->
+<div class="toast-container" id="toasts"></div>
+
+<script>
+// ─── STATE ────────────────────────────────────────────────────────────────────
+const state = {
+  results: [],       // [{...AnalysisResult}] pour affichage frontend
+  sessionIds: [],    // [string] IDs de session serveur pour génération PDF complète
+  queue: [],         // [{id, name, status, progress}]
+  config: {}
+};
+
+// ─── NAVIGATION ──────────────────────────────────────────────────────────────
+function showPage(name) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  const page = document.getElementById('page-' + name);
+  const nav  = document.getElementById('nav-' + name);
+  if (page) page.classList.add('active');
+  if (nav)  nav.classList.add('active');
+  if (name === 'config') loadConfig();
+  if (name === 'dashboard') updateDashboard();
+  if (name === 'results') renderResults();
+  if (name === 'queue') renderQueue();
+  if (name === 'logs') initLogStream();
+  if (name === 'audit') loadAuditReports();
+  if (name === 'readme') loadReadme();
+}
+
+
+// ─── README ──────────────────────────────────────────────────────────────────
+async function loadConfig() {
+  try {
+    const r = await fetch('/api/config');
+    const cfg = await r.json();
+    state.config = cfg;
+    document.getElementById('cfg-token').value = cfg.api_token || '';
+    document.getElementById('cfg-proxy').value = cfg.proxy || '';
+    document.getElementById('cfg-port').value = cfg.ui_port || '8766';
+    document.getElementById('cfg-abuseipdb').value = cfg.abuseipdb_key || '';
+    document.getElementById('config-raw').textContent = JSON.stringify(cfg, null, 2);
+    loadToggles();
+    if (cfg.use_geoip !== undefined) {
+      document.getElementById('tog-geoip').checked = !!cfg.use_geoip;
+      localStorage.setItem('tog-geoip', !!cfg.use_geoip);
+    }
+    if (cfg.api_token && cfg.api_token !== '' && !cfg.api_token.startsWith('enc:')) {
+      document.getElementById('pill-token').textContent = '✓ Token configuré';
+      document.getElementById('pill-token').className = 'topbar-pill live';
+    } else if (cfg.api_token && cfg.api_token.startsWith('enc:')) {
+      document.getElementById('pill-token').textContent = '🔒 Token chiffré';
+      document.getElementById('pill-token').className = 'topbar-pill live';
+    }
+    if (cfg.proxy) {
+      document.getElementById('pill-proxy').style.display = '';
+    }
+    // Token HuggingFace
+    const hfEl = document.getElementById('cfg-hf-token');
+    if (hfEl) {
+      hfEl.value = cfg.hf_token || '';
+      onHFTokenChange(); // met à jour les commandes curl avec le token
+    }
+    // Charger le catalogue des modèles IA
+    loadModels(cfg.ai_model || '');
+  } catch(e) {
+    toast('Erreur chargement config : ' + e.message, 'error');
+  }
+}
+
+async function loadModels(activeModel) {
+  const container = document.getElementById('ai-model-list');
+  const statusEl  = document.getElementById('ai-model-status');
+  if (!container) return;
+  try {
+    const r = await fetch('/api/models');
+    const data = await r.json();
+    const models = data.models || [];
+    const active = activeModel || data.active || '';
+
+    const specialtyLabel = { general: 'Généraliste', cyber: 'Cybersécurité CTI', custom: 'Local', code: 'Code' };
+    const specialtyColor = { general: 'var(--text3)', cyber: '#e86a2e', custom: '#888', code: '#2d9cdb' };
+
+    container.innerHTML = '';
+    models.forEach(m => {
+      const isActive = m.filename === active || (!active && m.filename.includes('mistral'));
+      const card = document.createElement('div');
+      card.style.cssText = `
+        border: 1.5px solid ${isActive ? 'var(--accent)' : 'var(--border)'};
+        border-radius: 8px; padding: 10px 14px;
+        background: ${isActive ? 'rgba(var(--accent-rgb, 233,69,96), 0.06)' : 'var(--bg2)'};
+        cursor: pointer; transition: border-color .15s;
+        display: flex; align-items: center; gap: 12px;
+      `;
+      card.onmouseover = () => { if (!isActive) card.style.borderColor = 'var(--text3)'; };
+      card.onmouseout  = () => { if (!isActive) card.style.borderColor = 'var(--border)'; };
+
+      const radio = document.createElement('input');
+      radio.type = 'radio';
+      radio.name = 'ai-model-choice';
+      radio.value = m.filename;
+      radio.checked = isActive;
+      radio.style.accentColor = 'var(--accent)';
+
+      const info = document.createElement('div');
+      info.style.flex = '1';
+      info.innerHTML = `
+        <div style="display:flex;align-items:center;gap:8px;font-weight:500;font-size:13px">
+          ${m.display_name}
+          <span style="font-size:10px;padding:1px 6px;border-radius:4px;background:${m.present ? '#1a4a2a' : '#3a2a1a'};color:${m.present ? '#4ade80' : '#f97316'}">
+            ${m.present ? '✓ Présent' : '⬇ À télécharger'}
+          </span>
+          <span style="font-size:10px;color:${specialtyColor[m.specialty] || 'var(--text3)'};font-weight:400">
+            ${specialtyLabel[m.specialty] || m.specialty}
+          </span>
+        </div>
+        <div style="font-size:11px;color:var(--text3);margin-top:2px">${m.description}</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:1px">
+          ${m.vram_min_gb ? `VRAM : ${m.vram_min_gb} Go min  ·  ` : ''}Taille : ~${m.size_gb.toFixed(1)} Go
+        </div>
+      `;
+
+      let actionEl = null;
+      if (!m.present) {
+        if (m.manual_install) {
+          actionEl = document.createElement('button');
+          actionEl.className = 'btn btn-secondary btn-sm';
+          actionEl.textContent = '📋 Instructions';
+          actionEl.title = 'Voir la procédure d\'installation manuelle';
+          actionEl.onclick = (e) => {
+            e.stopPropagation();
+            const steps = [
+              '1. Accepter la licence sur HuggingFace :',
+              `   ${m.source_url || 'https://huggingface.co/trend-cybertron/Llama-Primus-Merged'}`,
+              '2. Créer un token : https://huggingface.co/settings/tokens',
+              '3. Télécharger et convertir avec llama.cpp',
+              '4. Copier ' + m.filename + ' dans moteur/models/'
+            ].join('\n');
+            alert(`Installation manuelle — ${m.display_name}\n\n${steps}`);
+          };
+        } else {
+          // Conteneur jauge + bouton
+          actionEl = document.createElement('div');
+          actionEl.style.cssText = 'display:flex;flex-direction:column;align-items:flex-end;gap:4px;min-width:120px';
+
+          const dlBtn = document.createElement('button');
+          dlBtn.className = 'btn btn-secondary btn-sm';
+          dlBtn.textContent = '⬇ Télécharger';
+          dlBtn.title = `~${m.size_gb.toFixed(1)} Go`;
+          dlBtn.style.whiteSpace = 'nowrap';
+
+          // Jauge de progression (cachée au départ)
+          const gaugeWrap = document.createElement('div');
+          gaugeWrap.style.cssText = 'width:120px;display:none;flex-direction:column;gap:2px';
+          gaugeWrap.innerHTML = `
+            <div style="height:6px;background:var(--border);border-radius:3px;overflow:hidden">
+              <div class="dl-bar-fill" style="height:100%;width:0%;background:var(--accent);border-radius:3px;transition:width .4s ease"></div>
+            </div>
+            <div class="dl-bar-label" style="font-size:10px;color:var(--text3);text-align:right">0%</div>`;
+
+          let pollInterval = null;
+
+          const startPoll = (filename, sizeGb) => {
+            if (pollInterval) return;
+            gaugeWrap.style.display = 'flex';
+            dlBtn.disabled = true;
+            dlBtn.textContent = '⏳';
+            pollInterval = setInterval(async () => {
+              try {
+                const pr = await fetch(`/api/models/progress?filename=${encodeURIComponent(filename)}`);
+                const p = await pr.json();
+                const pct = Math.min(Math.round(p.percent || 0), 100);
+                const mb = Math.round((p.bytes_downloaded || 0) / 1024 / 1024);
+                const total = Math.round((p.bytes_total || 0) / 1024 / 1024);
+                gaugeWrap.querySelector('.dl-bar-fill').style.width = pct + '%';
+                gaugeWrap.querySelector('.dl-bar-label').textContent =
+                  pct > 0 ? `${pct}% — ${mb} / ${total} Mo` : 'Démarrage...';
+                if (p.present || pct >= 100) {
+                  clearInterval(pollInterval);
+                  pollInterval = null;
+                  gaugeWrap.querySelector('.dl-bar-fill').style.width = '100%';
+                  gaugeWrap.querySelector('.dl-bar-label').textContent = '✓ Terminé';
+                  setTimeout(() => loadModels(document.querySelector('input[name="ai-model-choice"]:checked')?.value || active), 800);
+                }
+              } catch(_) {}
+            }, 1000);
+          };
+
+          dlBtn.onclick = async (e) => {
+            e.stopPropagation();
+            try {
+              const resp = await fetch('/api/models/download', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({filename: m.filename})
+              });
+              const res = await resp.json();
+              if (res.status === 'already_present') {
+                toast(`${m.display_name} déjà présent`, 'success');
+                loadModels(active);
+              } else if (res.status === 'manual_install_required') {
+                toast('Installation manuelle requise', 'info');
+              } else if (res.status === 'token_required') {
+                toast('Token Hugging Face requis — configurez-le ci-dessous', 'error');
+                document.getElementById('cfg-hf-token')?.focus();
+              } else {
+                startPoll(m.filename, m.size_gb);
+              }
+            } catch(err) {
+              toast('Erreur : ' + err.message, 'error');
+            }
+          };
+
+          actionEl.appendChild(dlBtn);
+          actionEl.appendChild(gaugeWrap);
+        }
+      }
+
+      card.onclick = () => {
+        if (!m.present) return;
+        document.querySelectorAll('input[name="ai-model-choice"]').forEach(r => r.checked = false);
+        radio.checked = true;
+        document.querySelectorAll('#ai-model-list > div').forEach(c => {
+          c.style.borderColor = 'var(--border)';
+          c.style.background = 'var(--bg2)';
+        });
+        card.style.borderColor = 'var(--accent)';
+        card.style.background = 'rgba(var(--accent-rgb, 233,69,96), 0.06)';
+      };
+
+      card.appendChild(radio);
+      card.appendChild(info);
+      if (actionEl) card.appendChild(actionEl);
+      container.appendChild(card);
+    });
+
+    const presentCount = models.filter(m => m.present).length;
+    if (statusEl) statusEl.textContent = `${presentCount} modèle(s) disponible(s)`;
+
+    // Mettre à jour le badge Primus dans la section HF
+    const primus = models.find(m => m.filename && m.filename.toLowerCase().includes('primus'));
+    const badge = document.getElementById('primus-file-badge');
+    if (badge && primus) {
+      if (primus.present) {
+        badge.style.background = '#1a4a2a'; badge.style.color = '#4ade80';
+        badge.textContent = '✓ Primus présent';
+      } else {
+        badge.style.background = '#3a2a1a'; badge.style.color = '#f97316';
+        badge.textContent = '⬇ Absent';
+      }
+    }
+
+  } catch(e) {
+    if (container) container.innerHTML = `<div style="color:var(--text3);font-size:13px">Impossible de charger le catalogue (${e.message})</div>`;
+  }
+}
+
+async function saveConfig() {
+  const selectedModel = document.querySelector('input[name="ai-model-choice"]:checked')?.value || '';
+  const cfg = {
+    api_token: document.getElementById('cfg-token').value.trim(),
+    proxy: document.getElementById('cfg-proxy').value.trim(),
+    ui_port: document.getElementById('cfg-port').value.trim() || '8766',
+    abuseipdb_key: document.getElementById('cfg-abuseipdb').value.trim(),
+    ai_model: selectedModel,
+    hf_token: document.getElementById('cfg-hf-token')?.value.trim() || ''
+  };
+  try {
+    const r = await fetch('/api/config', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(cfg)
+    });
+    const res = await r.json();
+    if (res.error) throw new Error(res.error);
+    toast('Configuration sauvegardée' + (selectedModel ? ` — Modèle : ${selectedModel.split('.')[0]}` : ''), 'success');
+    loadConfig();
+    document.getElementById('cfg-status').textContent = '';
+  } catch(e) {
+    toast('Erreur : ' + e.message, 'error');
+  }
+}
+
+async function testConnection() {
+  const el = document.getElementById('cfg-status');
+  el.textContent = 'Test en cours...';
+  try {
+    const r = await fetch('/api/test-connection');
+    const res = await r.json();
+    if (res.error) {
+      el.style.color = 'var(--red)';
+      el.textContent = '✗ Erreur : ' + res.error;
+    } else {
+      el.style.color = 'var(--green)';
+      el.textContent = '✓ Connexion réussie';
+      document.getElementById('pill-status').style.display = '';
+    }
+  } catch(e) {
+    el.style.color = 'var(--red)';
+    el.textContent = '✗ ' + e.message;
+  }
+}
+
+function toggleTokenVis() {
+  const inp = document.getElementById('cfg-token');
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+}
+
+// ─── VAULT ────────────────────────────────────────────────────────────────────
+async function encryptToken() {
+  const token = document.getElementById('cfg-token').value.trim();
+  if (!token) { toast('Saisissez d\'abord un token', 'error'); return; }
+  try {
+    const r = await fetch('/api/vault/encrypt', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({value: token})
+    });
+    const res = await r.json();
+    if (res.error) throw new Error(res.error);
+    document.getElementById('cfg-token').value = res.encrypted;
+    toast('Token chiffré', 'success');
+    showVaultOutput('Token chiffré :\n' + res.encrypted);
+  } catch(e) {
+    toast('Erreur vault : ' + e.message, 'error');
+  }
+}
+
+async function vaultStatus() {
+  try {
+    const r = await fetch('/api/vault/status');
+    const res = await r.json();
+    if (res.error) throw new Error(res.error);
+    const box = document.getElementById('vault-status-box');
+    if (res.sealed) {
+      box.className = 'vault-status ok';
+      box.innerHTML = '<span>🔒</span> Vault actif — clé présente';
+    } else {
+      box.className = 'vault-status warn';
+      box.innerHTML = '<span>⚠</span> Pas de clé vault — secrets en clair';
+    }
+    showVaultOutput(JSON.stringify(res, null, 2));
+  } catch(e) {
+    showVaultOutput('Erreur : ' + e.message);
+  }
+}
+
+function showVaultOutput(text) {
+  const el = document.getElementById('vault-output');
+  const pre = document.getElementById('vault-output-text');
+  pre.textContent = text;
+  el.style.display = 'block';
+}
+
+// ─── SUBMIT TABS ─────────────────────────────────────────────────────────────
+const submitTabs = ['file','url','id','batch'];
+function switchSubmitTab(tab) {
+  document.querySelectorAll('.submit-tab').forEach((t,i) => {
+    t.classList.toggle('active', submitTabs[i] === tab);
+  });
+  submitTabs.forEach(t => {
+    const el = document.getElementById('panel-' + t);
+    if (el) el.classList.toggle('active', t === tab);
+  });
+  // Afficher le bouton "Lancer" uniquement pour URL / ID / batch
+  // Pour les fichiers : démarrage automatique au dépôt
+  const btn  = document.getElementById('btn-submit');
+  const hint = document.getElementById('panel-file-hint');
+  if (tab === 'file') {
+    if (btn)  btn.style.display  = 'none';
+    if (hint) hint.style.display = 'flex';
+  } else {
+    if (btn)  btn.style.display  = '';
+    if (hint) hint.style.display = 'none';
+  }
+}
+
+// ─── FILE DROP ────────────────────────────────────────────────────────────────
+let selectedFiles = [];
+let analysisRunning = false;   // vrai pendant qu'une analyse est en cours
+let pendingFiles   = [];       // fichiers déposés pendant qu'une analyse tourne
+function onDragOver(e) { e.preventDefault(); e.currentTarget.classList.add('drag'); }
+function onDragLeave(e) { e.currentTarget.classList.remove('drag'); }
+function onDrop(e) {
+  e.preventDefault();
+  e.currentTarget.classList.remove('drag');
+  addFiles(Array.from(e.dataTransfer.files));
+}
+function onFileSelect(e) { addFiles(Array.from(e.target.files)); }
+function addFiles(files) {
+  files.forEach(f => {
+    if (!selectedFiles.find(x => x.name === f.name)) selectedFiles.push(f);
+  });
+  renderFileList();
+
+  if (analysisRunning) {
+    // Une analyse tourne déjà — mettre les fichiers en attente
+    files.forEach(f => {
+      if (!pendingFiles.find(x => x.name === f.name)) pendingFiles.push(f);
+    });
+    toast(`⏳ ${files.length} fichier(s) en file d'attente — analyse en cours`, 'info');
+    return;
+  }
+
+  // Démarrer l'analyse automatiquement
+  if (selectedFiles.length > 0) {
+    setTimeout(() => submitAnalysis(), 300);
+  }
+}
+function renderFileList() {
+  const ul = document.getElementById('file-list');
+  ul.innerHTML = selectedFiles.map((f,i) =>
+    `<li>${f.name} <span style="color:var(--text3);font-size:10px">(${formatSize(f.size)})</span>
+     <button onclick="removeFile(${i})" style="background:none;border:none;color:var(--red);cursor:pointer;margin-left:6px;font-size:11px">✕</button></li>`
+  ).join('');
+}
+function removeFile(i) { selectedFiles.splice(i,1); renderFileList(); }
+function formatSize(n) {
+  if (n > 1024*1024) return (n/1024/1024).toFixed(1) + ' MB';
+  if (n > 1024) return (n/1024).toFixed(0) + ' KB';
+  return n + ' B';
+}
+
+// Batch file
+let batchContent = '';
+function onBatchDrop(e) {
+  e.preventDefault();
+  const file = e.dataTransfer.files[0];
+  if (file) loadBatchFile(file);
+}
+function onBatchSelect(e) {
+  const file = e.target.files[0];
+  if (file) loadBatchFile(file);
+}
+function loadBatchFile(file) {
+  const reader = new FileReader();
+  reader.onload = e => {
+    batchContent = e.target.result;
+    document.getElementById('batch-hint').textContent = '✓ ' + file.name + ' (' + batchContent.split('\n').filter(l => l.trim() && !l.startsWith('#')).length + ' cibles)';
+  };
+  reader.readAsText(file);
+}
+
+// ─── SUBMIT ───────────────────────────────────────────────────────────────────
+async function submitAnalysis() {
+  if (analysisRunning) return; // déjà en cours — les fichiers sont dans pendingFiles
+
+  const activeTab = submitTabs.find(t => document.getElementById('panel-' + t).classList.contains('active'));
+  const isPrivate = document.getElementById('chk-private').checked;
+
+  let targets = [];
+
+  switch (activeTab) {
+    case 'file':
+      if (selectedFiles.length === 0) { toast('Sélectionnez au moins un fichier', 'error'); return; }
+      targets = selectedFiles.map(f => ({type: 'file', name: f.name, file: f}));
+      break;
+    case 'url':
+      const urls = document.getElementById('url-input').value.trim().split('\n').filter(l => l.trim());
+      if (!urls.length) { toast('Saisissez au moins une URL', 'error'); return; }
+      targets = urls.map(u => ({type: 'url', name: u.trim()}));
+      break;
+    case 'id':
+      const ids = document.getElementById('id-input').value.trim().split('\n').filter(l => l.trim());
+      if (!ids.length) { toast('Saisissez au moins un ID', 'error'); return; }
+      targets = ids.map(id => ({type: 'id', name: id.trim()}));
+      break;
+    case 'batch':
+      if (!batchContent) { toast('Chargez un fichier batch', 'error'); return; }
+      const lines = batchContent.split('\n').filter(l => l.trim() && !l.startsWith('#'));
+      targets = lines.map(l => ({
+        type: l.trim().startsWith('http') ? 'url' : 'file',
+        name: l.trim()
+      }));
+      break;
+  }
+
+  // Add to queue
+  targets.forEach(t => {
+    state.queue.push({id: null, name: t.name, type: t.type, status: 'pending', progress: 0});
+  });
+  updateBadges();
+  showPage('queue');
+
+  // Show progress
+  analysisRunning = true;
+  if(document.getElementById('btn-submit')) document.getElementById('btn-submit').disabled = true;
+  document.getElementById('submit-progress').style.display = 'flex';
+
+  // ── ISOLATION : chaque nouveau dépôt repart d'un état vierge ────────────
+  // Les analyses précédentes ne doivent pas contaminer le rapport de ce dépôt.
+  // On réinitialise les résultats, sessions ET la queue avant chaque nouveau lot.
+  state.results    = [];
+  state.sessionIds = [];
+  // Vider les items terminés/en erreur de la queue pour éviter les faux matchs
+  state.queue = state.queue.filter(q => q.status === 'running');
+
+  // ⚡ Préchauffer le moteur IA immédiatement — en parallèle de l'analyse RF
+  fetch('/api/warmup', { method: 'POST' }).catch(() => {});
+
+  let completed = 0;
+  for (let i = 0; i < targets.length; i++) {
+    const t = targets[i];
+    const qIdx = state.queue.findIndex(q => q.name === t.name && q.status === 'pending');
+    if (qIdx >= 0) state.queue[qIdx].status = 'running';
+    renderQueue();
+
+    document.getElementById('submit-progress-text').textContent =
+      `Analyse ${i+1}/${targets.length} : ${t.name}`;
+
+    try {
+      let result;
+      if (t.type === 'id') {
+        result = await fetchExistingID(t.name);
+      } else if (t.type === 'url') {
+        result = await submitURLAndWait(t.name, isPrivate);
+      } else {
+        result = await submitFileAndWait(t.file, isPrivate);
+      }
+      // Ajouter uniquement les résultats du lot courant
+      state.results.unshift(result);
+      // Session ID unique pour ce fichier — isolé des analyses précédentes
+      if (result.session_id && !state.sessionIds.includes(result.session_id)) {
+        state.sessionIds.unshift(result.session_id);
+      }
+      if (qIdx >= 0) { state.queue[qIdx].status = 'done'; state.queue[qIdx].id = result.sample_id; }
+      completed++;
+      toast('✓ ' + t.name.split('/').pop() + ' — Score: ' + result.score + '/10',
+        result.score >= 7 ? 'error' : result.score >= 4 ? 'info' : 'success');
+
+      // ── Rapport IA individuel — généré immédiatement après chaque fichier ──
+      // Chaque fichier obtient son propre rapport PDF indépendant.
+      // On n'attend pas la fin du lot complet.
+      if (result.session_id) {
+        toast(`🤖 Rapport IA en cours pour ${t.name.split('/').pop()}...`, 'info');
+        generatePDFForSession([result.session_id]);
+      }
+
+    } catch(e) {
+      if (qIdx >= 0) state.queue[qIdx].status = 'error';
+      toast('Erreur : ' + t.name + ' — ' + e.message, 'error');
+    }
+    renderQueue(); updateDashboard(); renderResults(); updateBadges();
+  }
+
+  analysisRunning = false;
+  if(document.getElementById('btn-submit')) document.getElementById('btn-submit').disabled = false;
+  document.getElementById('submit-progress').style.display = 'none';
+  selectedFiles = [];
+  renderFileList();
+
+  if (completed > 0) {
+    toast(completed + ' analyse(s) terminée(s)', 'success');
+    // Supprimer les items done de la queue après 5s
+    setTimeout(() => {
+      state.queue = state.queue.filter(q => q.status !== 'done');
+      renderQueue(); updateBadges();
+    }, 5000);
+  }
+
+  // ── Fichiers en attente : traiter le prochain lot ─────────────────────
+  if (pendingFiles.length > 0) {
+    const nextBatch = pendingFiles.splice(0, pendingFiles.length);
+    toast(`▶ Démarrage du prochain lot (${nextBatch.length} fichier(s))`, 'info');
+    nextBatch.forEach(f => {
+      if (!selectedFiles.find(x => x.name === f.name)) selectedFiles.push(f);
+    });
+    renderFileList();
+    setTimeout(() => submitAnalysis(), 500);
+  }
+}
+
+async function submitFileAndWait(file, isPrivate) {
+  const fd = new FormData();
+  fd.append('file', file);
+  fd.append('private', isPrivate ? '1' : '0');
+  const r = await fetch('/api/submit', { method: 'POST', body: fd });
+  const res = await r.json();
+  if (res.error) throw new Error(res.error);
+  return res;
+}
+
+async function submitURLAndWait(url, isPrivate) {
+  const r = await fetch('/api/submit', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({url, private: isPrivate})
+  });
+  const res = await r.json();
+  if (res.error) throw new Error(res.error);
+  return res;
+}
+
+async function fetchExistingID(id) {
+  const r = await fetch('/api/fetch?id=' + encodeURIComponent(id));
+  const res = await r.json();
+  if (res.error) throw new Error(res.error);
+  return res;
+}
+
+function clearSubmitForm() {
+  selectedFiles = [];
+  renderFileList();
+  document.getElementById('url-input').value = '';
+  document.getElementById('id-input').value = '';
+  batchContent = '';
+  document.getElementById('batch-hint').textContent = 'Glissez ou cliquez pour sélectionner';
+}
+
+// ─── RESULTS ─────────────────────────────────────────────────────────────────
+function renderResults() {
+  const tbody = document.getElementById('results-tbody');
+  const table = document.getElementById('results-table');
+  const empty = document.getElementById('results-empty');
+  const search = document.getElementById('results-search').value.toLowerCase();
+  const scoreFilter = document.getElementById('results-filter-score').value;
+
+  let filtered = state.results.filter(r => {
+    if (search) {
+      const hay = [r.filename, r.family, r.sample_id, r.hashes?.md5, r.hashes?.sha256].join(' ').toLowerCase();
+      if (!hay.includes(search)) return false;
+    }
+    if (scoreFilter) {
+      if (scoreFilter === '10' && r.score !== 10) return false;
+      if (scoreFilter === 'high' && (r.score < 7 || r.score === 10)) return false;
+      if (scoreFilter === 'med' && (r.score < 4 || r.score > 6)) return false;
+      if (scoreFilter === 'low' && r.score > 3) return false;
+    }
+    return true;
+  });
+
+  if (filtered.length === 0) {
+    table.style.display = 'none';
+    empty.style.display = 'block';
+  } else {
+    table.style.display = 'table';
+    empty.style.display = 'none';
+    document.getElementById('results-subtitle').textContent =
+      filtered.length + ' résultat(s)' + (state.results.length > filtered.length ? ' (filtré sur ' + state.results.length + ')' : '');
+
+    tbody.innerHTML = filtered.map((r, i) => `
+      <tr>
+        <td><div class="${scoreBadgeClass(r.score)}">${r.score}</div></td>
+        <td>
+          <div style="font-family:var(--mono);font-size:12px;color:var(--text);max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(r.filename || r.sample_id || '—')}</div>
+          ${r.sample_id ? `<div style="font-size:10px;color:var(--text3);margin-top:2px;font-family:var(--mono)">${r.sample_id}</div>` : ''}
+        </td>
+        <td>${r.family ? `<span class="tag tag-red">${escHtml(r.family)}</span>` : '<span style="color:var(--text3)">—</span>'}</td>
+        <td style="max-width:200px">${(r.tags||[]).slice(0,4).map(t => `<span class="tag ${tagClass(t)}">${escHtml(t)}</span>`).join('')}</td>
+        <td style="font-family:var(--mono);font-size:11px;color:var(--text3)">
+          ${r.hashes?.md5 ? r.hashes.md5.substring(0,10)+'…' : '—'}
+        </td>
+        <td><span class="status-dot ${r.status}">${r.status}</span></td>
+        <td><button class="btn btn-secondary btn-sm" onclick="showDetail(${state.results.indexOf(r)})">Détail →</button></td>
+      </tr>
+    `).join('');
+  }
+}
+
+function filterResults() { renderResults(); }
+
+function clearResults() {
+  if (!confirm('Vider tous les résultats ?')) return;
+  state.results = [];
+  state.sessionIds = [];   // ← reset sessions : le prochain PDF ne traitera que les nouveaux dépôts
+  renderResults(); updateDashboard(); updateBadges();
+}
+
+function exportResults() {
+  if (!state.results.length) { toast('Aucun résultat', 'error'); return; }
+  const blob = new Blob([JSON.stringify(state.results, null, 2)], {type: 'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'rf_sandbox_' + new Date().toISOString().slice(0,10) + '.json';
+  a.click();
+}
+
+async function generatePDF() {
+  if (!state.results.length) { toast('Aucun résultat à exporter', 'error'); return; }
+  if (!state.sessionIds.length) { toast('Sessions expirées — relancez une analyse', 'error'); return; }
+  await generatePDFForSession(state.sessionIds.slice());
+}
+
+// generatePDFForSession : génère un rapport PDF pour une liste de session IDs.
+// Appelé après chaque fichier individuel OU manuellement.
+async function generatePDFForSession(sessionIds) {
+  try {
+    const resp = await fetch('/api/report', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        session_ids:          sessionIds,
+        tlp:                  document.getElementById('tlp-select')?.value || 'TLP:WHITE',
+        use_mitre:            getToggles().mitre,
+        use_abuseipdb:        getToggles().abuseipdb,
+        use_knowledge:        getToggles().knowledge,
+        use_knowledge_inject: getToggles().knowledgeInject,
+        use_geoip:            getToggles().geoip,
+      })
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({error: resp.statusText}));
+      throw new Error(err.error || resp.statusText);
+    }
+    // Le rapport est archivé dans reporting/ côté serveur — pas besoin de télécharger.
+    // On consomme quand même le body pour libérer la connexion.
+    await resp.blob();
+    toast('✅ Rapport IA généré — disponible dans l\'onglet Rapports IA', 'success');
+    showPage('reporting');
+    loadReportingList();
+  } catch(e) {
+    toast('Erreur PDF : ' + e.message, 'error');
+  }
+}
+
+// ─── DETAIL PANEL ────────────────────────────────────────────────────────────
+function showDetail(idx) {
+  const r = state.results[idx];
+  if (!r) return;
+  document.getElementById('detail-title').textContent = r.filename || r.sample_id || '—';
+  document.getElementById('detail-id').textContent = r.sample_id || '';
+
+  const body = document.getElementById('detail-body');
+
+  // Score + family
+  let html = `
+    <div style="display:flex;gap:12px;align-items:center;margin-bottom:20px">
+      <div class="${scoreBadgeClass(r.score)}" style="width:48px;height:48px;font-size:20px">${r.score}</div>
+      <div>
+        <div style="font-size:14px;font-weight:600;color:var(--text)">${r.family ? r.family.toUpperCase() : 'Famille inconnue'}</div>
+        <div style="margin-top:4px">${(r.tags||[]).map(t=>`<span class="tag ${tagClass(t)}">${escHtml(t)}</span>`).join('')}</div>
+      </div>
+    </div>`;
+
+  // Hashes
+  if (r.hashes && (r.hashes.md5 || r.hashes.sha256)) {
+    html += `<div class="detail-section">
+      <div class="detail-section-title">HASHES</div>
+      ${r.hashes.md5 ? `<div class="hash-row"><span class="hash-key">MD5</span><span class="hash-val">${r.hashes.md5}</span></div>` : ''}
+      ${r.hashes.sha1 ? `<div class="hash-row"><span class="hash-key">SHA1</span><span class="hash-val">${r.hashes.sha1}</span></div>` : ''}
+      ${r.hashes.sha256 ? `<div class="hash-row"><span class="hash-key">SHA256</span><span class="hash-val">${r.hashes.sha256}</span></div>` : ''}
+    </div>`;
+  }
+
+  // Signatures
+  if (r.signatures && r.signatures.length) {
+    html += `<div class="detail-section">
+      <div class="detail-section-title">SIGNATURES (${r.signatures.length})</div>
+      ${r.signatures.slice(0,15).map(s => `
+        <div class="sig-item">
+          <div class="sig-header">
+            <div class="sig-label">${escHtml(s.signature?.label || s.label || s.name || '—')}</div>
+            <div class="sig-score ${s.signature?.score>=8||s.score>=8?'crit':s.signature?.score>=5||s.score>=5?'high':'med'}">${s.signature?.score||s.score||0}</div>
+          </div>
+          ${(s.signature?.desc||s.desc) ? `<div class="sig-desc">${escHtml(s.signature?.desc||s.desc)}</div>` : ''}
+          ${(s.signature?.ttp||s.ttp||[]).length ? `<div class="sig-ttp">${(s.signature?.ttp||s.ttp).join(' · ')}</div>` : ''}
+        </div>`).join('')}
+    </div>`;
+  }
+
+  // IOCs
+  const iocs = r.iocs || {};
+  if ((iocs.ips||[]).length || (iocs.domains||[]).length || (iocs.urls||[]).length) {
+    html += `<div class="detail-section"><div class="detail-section-title">INDICATEURS (IOCs)</div>`;
+    if ((iocs.ips||[]).length) {
+      html += `<div class="ioc-group"><div class="ioc-group-title">IPs (${iocs.ips.length})</div>
+        ${iocs.ips.map(ip => `<div class="ioc-item">${escHtml(ip)}<button class="ioc-copy" onclick="copyText('${escHtml(ip)}')">📋</button></div>`).join('')}</div>`;
+    }
+    if ((iocs.domains||[]).length) {
+      html += `<div class="ioc-group"><div class="ioc-group-title">Domaines (${iocs.domains.length})</div>
+        ${iocs.domains.map(d => `<div class="ioc-item">${escHtml(d)}<button class="ioc-copy" onclick="copyText('${escHtml(d)}')">📋</button></div>`).join('')}</div>`;
+    }
+    if ((iocs.urls||[]).length) {
+      html += `<div class="ioc-group"><div class="ioc-group-title">URLs (${iocs.urls.length})</div>
+        ${iocs.urls.map(u => `<div class="ioc-item" style="font-size:11px">${escHtml(u)}<button class="ioc-copy" onclick="copyText('${escHtml(u)}')">📋</button></div>`).join('')}</div>`;
+    }
+    html += `</div>`;
+  }
+
+  // Network
+  const nets = r.network || {};
+  const flows = Object.values(nets).flatMap(n => n.flows || []);
+  if (flows.length) {
+    html += `<div class="detail-section"><div class="detail-section-title">FLUX RÉSEAU (${flows.length})</div>`;
+    flows.slice(0,10).forEach(f => {
+      html += `<div class="flow-row">
+        <div class="flow-dest">${escHtml(f.dest||'')}</div>
+        ${f.domain ? `<div class="flow-domain">${escHtml(f.domain)}</div>` : ''}
+        ${f.country ? `<div class="flow-country">${f.country}</div>` : ''}
+        <div style="font-size:11px;color:var(--text3)">${(f.protocols||[]).join('/')}</div>
+      </div>`;
+    });
+    html += `</div>`;
+  }
+
+  // Processes
+  if (r.processes && r.processes.length) {
+    html += `<div class="detail-section"><div class="detail-section-title">PROCESSUS (${r.processes.length})</div>
+      <div style="overflow-x:auto"><table style="width:100%;font-size:12px;border-collapse:collapse">
+        <tr><th style="text-align:left;color:var(--text3);padding:4px 8px">PID</th><th style="text-align:left;color:var(--text3);padding:4px 8px">Image</th></tr>
+        ${r.processes.slice(0,10).map(p => `<tr>
+          <td style="padding:4px 8px;font-family:var(--mono);color:var(--text3)">${p.process?.pid||p.pid||'—'}</td>
+          <td style="padding:4px 8px;font-family:var(--mono);font-size:11px;color:var(--text2);word-break:break-all">${escHtml(p.process?.image||p.image||'—')}</td>
+        </tr>`).join('')}
+      </table></div>
+    </div>`;
+  }
+
+  body.innerHTML = html;
+  document.getElementById('detail-panel').classList.add('open');
+  document.getElementById('overlay').classList.add('open');
+}
+
+function closeDetail() {
+  document.getElementById('detail-panel').classList.remove('open');
+  document.getElementById('overlay').classList.remove('open');
+}
+
+// ─── QUEUE ────────────────────────────────────────────────────────────────────
+function renderQueue() {
+  const list = document.getElementById('queue-list');
+  const empty = document.getElementById('queue-empty');
+  const active = state.queue.filter(q => q.status !== 'done');
+  if (!state.queue.length) {
+    empty.style.display = 'block';
+    list.innerHTML = '';
+    return;
+  }
+  empty.style.display = 'none';
+  list.innerHTML = state.queue.map(q => `
+    <div class="queue-item">
+      <div class="queue-name">${escHtml(q.name)}</div>
+      <div class="queue-status">
+        ${q.status === 'running' ? '<div class="spinner"></div>' : ''}
+        ${q.status === 'pending' ? '⏳' : ''}
+        ${q.status === 'done' ? '✅' : ''}
+        ${q.status === 'error' ? '❌' : ''}
+        ${q.status}
+      </div>
+    </div>`).join('');
+}
+
+// ─── DASHBOARD ────────────────────────────────────────────────────────────────
+function updateDashboard() {
+  const results = state.results;
+  document.getElementById('stat-total').textContent = results.length;
+  document.getElementById('stat-critical').textContent = results.filter(r => r.score === 10).length;
+  document.getElementById('stat-high').textContent = results.filter(r => r.score >= 7 && r.score < 10).length;
+  document.getElementById('stat-clean').textContent = results.filter(r => r.score <= 3).length;
+  document.getElementById('dash-date').textContent = new Date().toLocaleDateString('fr-FR', {weekday:'long',day:'numeric',month:'long',year:'numeric'});
+
+  // Recent
+  const recent = document.getElementById('dash-recent');
+  if (!results.length) {
+    recent.innerHTML = `<div class="empty-state"><div class="empty-icon">🔬</div><div class="empty-text">Aucune analyse.<br>Soumettez des fichiers ou URLs.</div></div>`;
+  } else {
+    recent.innerHTML = `<table class="results-table">
+      <thead><tr><th>Score</th><th>Fichier</th><th>Statut</th></tr></thead>
+      <tbody>${results.slice(0,5).map(r => `
+        <tr onclick="showDetail(${results.indexOf(r)})" style="cursor:pointer">
+          <td><div class="${scoreBadgeClass(r.score)}" style="width:28px;height:28px;font-size:12px">${r.score}</div></td>
+          <td><div style="font-size:12px;font-family:var(--mono);color:var(--text);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(r.filename||r.sample_id||'—')}</div></td>
+          <td><span class="status-dot ${r.status}">${r.status}</span></td>
+        </tr>`).join('')}
+      </tbody>
+    </table>`;
+  }
+
+  // Families
+  const families = {};
+  results.forEach(r => { if (r.family) families[r.family] = (families[r.family]||0)+1; });
+  const famDiv = document.getElementById('dash-families');
+  if (!Object.keys(families).length) {
+    famDiv.innerHTML = `<div class="empty-state"><div class="empty-icon">🧬</div><div class="empty-text">Aucune famille détectée.</div></div>`;
+  } else {
+    famDiv.innerHTML = Object.entries(families).sort((a,b)=>b[1]-a[1]).map(([fam,cnt]) =>
+      `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+        <span class="tag tag-red">${escHtml(fam)}</span>
+        <div style="flex:1;margin:0 8px"><div class="progress-bar"><div class="progress-fill" style="width:${Math.min(100,cnt*20)}%"></div></div></div>
+        <span style="font-family:var(--mono);font-size:13px;color:var(--text2)">${cnt}</span>
+      </div>`).join('');
+  }
+}
+
+// ─── BADGES ──────────────────────────────────────────────────────────────────
+function updateBadges() {
+  const rb = document.getElementById('badge-results');
+  const qb = document.getElementById('badge-queue');
+  if (state.results.length) {
+    rb.style.display = '';
+    rb.textContent = state.results.length;
+  } else {
+    rb.style.display = 'none';
+  }
+  const active = state.queue.filter(q => q.status === 'running' || q.status === 'pending').length;
+  if (active) {
+    qb.style.display = '';
+    qb.textContent = active;
+  } else {
+    qb.style.display = 'none';
+  }
+}
+
+// ─── HELPERS ─────────────────────────────────────────────────────────────────
+function scoreBadgeClass(score) {
+  if (score === 10) return 'score-badge score-10';
+  if (score >= 7)  return 'score-badge score-high';
+  if (score >= 4)  return 'score-badge score-med';
+  if (score > 0)   return 'score-badge score-low';
+  return 'score-badge score-zero';
+}
+
+function tagClass(tag) {
+  if (/ransomware|trojan|malware|spyware|banker/.test(tag)) return 'tag-red';
+  if (/evasion|injection|persistence|defense/.test(tag)) return 'tag-orange';
+  if (/phishing|credential|network/.test(tag)) return 'tag-blue';
+  return 'tag-gray';
+}
+
+function escHtml(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function copyText(text) {
+  navigator.clipboard.writeText(text).then(() => toast('Copié !', 'success'));
+}
+
+function toast(msg, type = 'info') {
+  const div = document.createElement('div');
+  div.className = 'toast ' + type;
+  div.innerHTML = `<span>${msg}</span>`;
+  document.getElementById('toasts').appendChild(div);
+  setTimeout(() => div.remove(), 4000);
+}
+
+// ─── INIT ─────────────────────────────────────────────────────────────────────
+// ─── LOGS SSE ─────────────────────────────────────────────────────────────────
+let logEventSource = null;
+
+function initLogStream() {
+  if (logEventSource) return;
+  logEventSource = new EventSource('/api/logs');
+
+  logEventSource.onopen_main = () => {
+    document.getElementById('log-status-dot').style.background = '#22c55e';
+    document.getElementById('log-status-txt').textContent = 'Connecté';
+  };
+  logEventSource.addEventListener('open', () => {
+    document.getElementById('log-status-dot').style.background = '#22c55e';
+    document.getElementById('log-status-txt').textContent = 'Connecté';
+    const dot = document.getElementById('floater-dot');
+    if (dot) dot.classList.add('live');
+  });
+
+  logEventSource.onmessage = (e) => {
+    const msg = e.data;
+    const ts = new Date().toLocaleTimeString('fr-FR', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+
+    // Couleurs pour fond blanc (page logs) — réutilisées pour la loupe
+    let color = '#1e293b';       // texte normal
+    if (/ERREUR|ERROR|error|fatal|FATAL/i.test(msg))          color = '#dc2626';  // rouge
+    else if (/WARN|warn|⚠/i.test(msg))                        color = '#d97706';  // orange
+    else if (/GPU|CUDA|ngl|VRAM/i.test(msg))                  color = '#7c3aed';  // violet GPU
+    else if (/OK|✓|success|started|lancé|opérationnel/i.test(msg)) color = '#16a34a';  // vert
+    else if (/droppé|dropped|payload|fichier.déposé/i.test(msg)) color = '#0891b2'; // cyan payloads
+    else if (/vault|chiffr|encrypt/i.test(msg))               color = '#7c3aed';  // violet
+    else if (/\[vault\]/i.test(msg))                          color = '#dc2626';
+    else if (/\[RETRY\]|\[ENRICH\]|\[KNOWLEDGE\]/i.test(msg)) color = '#0284c7'; // bleu info
+    else if (/\[AI\]|\[AI-FALLBACK\]/i.test(msg))             color = '#0369a1'; // bleu AI
+    else if (/Génération|génération|Prompt|prompt/i.test(msg)) color = '#0369a1'; // bleu AI
+    else if (/\[TRAINING\]/i.test(msg))                       color = '#7c3aed'; // violet training
+
+    function makeLogLine(text, parentEl) {
+      const line = document.createElement('div');
+      line.style.color = color;
+      line.style.borderBottom = '1px solid rgba(255,255,255,.03)';
+      line.style.padding = '1px 0';
+      line.style.fontFamily = 'monospace';
+      line.style.fontSize = '12px';
+      line.textContent = `[${ts}] ${text}`;
+      parentEl.appendChild(line);
+      return line;
+    }
+
+    // Page logs principale
+    const out = document.getElementById('log-output');
+    makeLogLine(msg, out);
+    if (out.scrollTop + out.clientHeight >= out.scrollHeight - 40) out.scrollTop = out.scrollHeight;
+
+    // Fenêtre flottante
+    const floatOut = document.getElementById('log-floater-body');
+    if (floatOut) {
+      makeLogLine(msg, floatOut);
+      if (floatOut.scrollTop + floatOut.clientHeight >= floatOut.scrollHeight - 40) floatOut.scrollTop = floatOut.scrollHeight;
+    }
+
+    // Badge FAB : compter les erreurs
+    if (/ERREUR|ERROR|error|fatal|FATAL/i.test(msg)) {
+      state.fabErrors = (state.fabErrors || 0) + 1;
+      const badge = document.getElementById('fab-badge');
+      badge.textContent = state.fabErrors > 9 ? '9+' : state.fabErrors;
+      badge.style.display = '';
+    }
+
+    // Réactivation automatique du bouton entraînement quand trainer.exe se termine
+    const btn = document.getElementById('btn-launch-training');
+    const trainingStatus = document.getElementById('training-status');
+    if (btn && btn.disabled) {
+      if (/\[TRAINING\].*✓.*terminé/i.test(msg)) {
+        btn.disabled = false;
+        btn.textContent = '🧠 Entraîner les IA';
+        if (trainingStatus) {
+          trainingStatus.style.color = 'var(--ok, #4caf50)';
+          trainingStatus.textContent = '✓ Entraînement terminé — copiez le .gguf dans moteur/models/';
+        }
+        toast('✓ Fine-tuning terminé ! Modèle prêt dans moteur/lora/', 'success');
+      } else if (/\[TRAINING\].*✗/i.test(msg)) {
+        btn.disabled = false;
+        btn.textContent = '🧠 Entraîner les IA';
+        if (trainingStatus) {
+          trainingStatus.style.color = 'var(--err, #f44336)';
+          trainingStatus.textContent = '✗ ' + msg.replace(/^\[TRAINING\]\s*/i, '');
+        }
+      }
+    }
+  };
+
+  logEventSource.onopen = () => {
+    const dot = document.getElementById('floater-dot');
+    if (dot) { dot.classList.add('live'); }
+    document.getElementById('floater-status').textContent = 'Connecté';
+  };
+
+  logEventSource.onerror = () => {
+    document.getElementById('log-status-dot').style.background = '#ef4444';
+    document.getElementById('log-status-txt').textContent = 'Erreur — reconnexion…';
+  };
+}
+
+function clearLogs() {
+  document.getElementById('log-output').innerHTML = '';
+}
+
+function copyLogs() {
+  const text = Array.from(document.getElementById('log-output').children)
+    .map(l => l.textContent).join('\n');
+  navigator.clipboard.writeText(text).then(() => {
+    const btn = event.target;
+    btn.textContent = '✅ Copié';
+    setTimeout(() => btn.textContent = '📋 Copier', 1500);
+  });
+}
+
+
+// ─── TOGGLES ANALYSE ────────────────────────────────────────────────────────
+function saveToggles() {
+  localStorage.setItem('tog-mitre',            document.getElementById('tog-mitre').checked);
+  localStorage.setItem('tog-abuseipdb',        document.getElementById('tog-abuseipdb').checked);
+  localStorage.setItem('tog-knowledge',        document.getElementById('tog-knowledge').checked);
+  localStorage.setItem('tog-knowledge-inject', document.getElementById('tog-knowledge-inject').checked);
+  localStorage.setItem('tog-geoip',            document.getElementById('tog-geoip').checked);
+}
+function loadToggles() {
+  const get = (id, def) => {
+    const v = localStorage.getItem(id);
+    return v === null ? def : v === 'true';
+  };
+  document.getElementById('tog-mitre').checked            = get('tog-mitre', true);
+  document.getElementById('tog-abuseipdb').checked        = get('tog-abuseipdb', true);
+  document.getElementById('tog-geoip').checked            = get('tog-geoip', false);
+  document.getElementById('tog-knowledge').checked        = get('tog-knowledge', true);
+  document.getElementById('tog-knowledge-inject').checked = get('tog-knowledge-inject', false);
+}
+function getToggles() {
+  return {
+    mitre:           document.getElementById('tog-mitre')?.checked ?? true,
+    abuseipdb:       document.getElementById('tog-abuseipdb')?.checked ?? true,
+    knowledge:       document.getElementById('tog-knowledge')?.checked ?? true,
+    knowledgeInject: document.getElementById('tog-knowledge-inject')?.checked ?? false,
+    geoip:           document.getElementById('tog-geoip')?.checked ?? false,
+  };
+}
+// Auto-sauvegarde immédiate du toggle GeoIP dans config.json
+async function autoSaveGeoIP() {
+  try {
+    const current = await fetch('/api/config').then(r => r.json());
+    current.use_geoip = document.getElementById('tog-geoip').checked;
+    await fetch('/api/config', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(current)
+    });
+  } catch(e) { /* silencieux, l'état reste dans localStorage */ }
+}
+
+async function saveAnalysisConfig() {
+  // Sauvegarder la cle AbuseIPDB dans config.json + les toggles dans localStorage
+  saveToggles();
+  const cfgEl = {
+    api_token:    document.getElementById('cfg-token').value.trim(),
+    proxy:        document.getElementById('cfg-proxy').value.trim(),
+    ui_port:      document.getElementById('cfg-port').value.trim() || '8766',
+    abuseipdb_key: document.getElementById('cfg-abuseipdb').value.trim(),
+    use_geoip:    document.getElementById('tog-geoip').checked,
+  };
+  try {
+    const r = await fetch('/api/config', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(cfgEl)
+    });
+    const res = await r.json();
+    if (res.error) throw new Error(res.error);
+    toast('Configuration analyse sauvegardée', 'success');
+  } catch(e) { toast('Erreur : ' + e.message, 'error'); }
+}
+function toggleAbuseVis() {
+  const el = document.getElementById('cfg-abuseipdb');
+  el.type = el.type === 'password' ? 'text' : 'password';
+}
+
+async function runAIAuditReport() {
+  const btn = document.getElementById('btn-ai-audit');
+  const banner = document.getElementById('audit-result-banner');
+  if (!window._lastAuditOutput) {
+    toast('Lancez d\'abord un audit pour obtenir des données à analyser', 'error');
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = '⏳ Analyse IA...';
+  if (banner) {
+    banner.style.cssText = 'display:block;padding:14px 18px;background:rgba(37,99,235,.08);border:1px solid rgba(37,99,235,.25);border-radius:10px;font-size:13px;color:var(--text)';
+    banner.innerHTML = '🤖 Envoi du rapport au moteur IA local — analyse en cours (peut prendre 1-2 minutes)...';
+  }
+  try {
+    const r = await fetch('/api/audit/ai-report', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        audit_output: window._lastAuditOutput,
+        pdf_name: window._lastAuditPDF
+      })
+    });
+    const res = await r.json();
+    if (res.error) throw new Error(res.error);
+    if (banner) {
+      banner.style.cssText = 'display:block;padding:14px 18px;background:rgba(22,163,74,.1);border:1px solid rgba(22,163,74,.3);border-radius:10px;font-size:13px;color:var(--text)';
+      banner.innerHTML = `✅ Rapport IA généré : <strong>${res.pdf}</strong> — <em>${res.message}</em>`;
+    }
+    toast('Rapport IA disponible dans audit/', 'success');
+    await loadAuditReports();
+  } catch(e) {
+    if (banner) {
+      banner.style.cssText = 'display:block;padding:14px 18px;background:rgba(220,38,38,.1);border:1px solid rgba(220,38,38,.3);border-radius:10px;font-size:13px;color:var(--text)';
+      banner.innerHTML = '❌ Erreur rapport IA : ' + e.message;
+    }
+    toast('Erreur : ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🤖 Rapport IA';
+  }
+}
+function toggleHFTokenVis() {
+  const el = document.getElementById('cfg-hf-token');
+  if (el) el.type = el.type === 'password' ? 'text' : 'password';
+}
+
+// Les commandes de conversion sont fixes — le token est utilisé via huggingface-cli login
+function onHFTokenChange() {}
+
+function switchDlTab(tab) {
+  document.getElementById('dl-cmd-ps').style.display    = tab === 'ps'    ? 'block' : 'none';
+  document.getElementById('dl-cmd-linux').style.display = tab === 'linux' ? 'block' : 'none';
+  document.getElementById('tab-ps').style.background    = tab === 'ps'    ? 'var(--accent)' : 'var(--bg2)';
+  document.getElementById('tab-ps').style.color         = tab === 'ps'    ? '#fff'          : 'var(--text3)';
+  document.getElementById('tab-linux').style.background = tab === 'linux' ? 'var(--accent)' : 'var(--bg2)';
+  document.getElementById('tab-linux').style.color      = tab === 'linux' ? '#fff'          : 'var(--text3)';
+}
+
+function copyDlCmd(tab) {
+  const elId = tab === 'ps' ? 'dl-cmd-ps-code' : 'dl-cmd-linux-code';
+  const text = document.getElementById(elId)?.textContent || '';
+  navigator.clipboard.writeText(text).then(() => toast('Commande copiée', 'success'));
+}
+
+async function checkPrimusPresence() {
+  const msg = document.getElementById('primus-check-msg');
+  const badge = document.getElementById('primus-file-badge');
+  if (msg) msg.textContent = 'Vérification...';
+  try {
+    const r = await fetch('/api/models');
+    const data = await r.json();
+    const primus = (data.models || []).find(m => m.filename && m.filename.toLowerCase().includes('primus'));
+    if (primus?.present) {
+      if (msg) msg.textContent = '✅ Primus 8B est présent dans moteur/models/ — rechargez la page pour l\'activer';
+      if (badge) { badge.style.background = '#1a4a2a'; badge.style.color = '#4ade80'; badge.textContent = '✓ Primus présent'; }
+      loadModels(document.querySelector('input[name="ai-model-choice"]:checked')?.value || '');
+    } else {
+      if (msg) msg.textContent = '⏳ Fichier non encore détecté — relancez après le téléchargement';
+    }
+  } catch(e) {
+    if (msg) msg.textContent = 'Erreur : ' + e.message;
+  }
+}
+async function loadKnowledgeStats() {
+  try {
+    const r = await fetch('/api/knowledge/stats');
+    const res = await r.json();
+    const el = document.getElementById('knowledge-stats');
+    el.textContent = res.stats || 'Base vide';
+    el.style.display = '';
+  } catch(e) {
+    document.getElementById('knowledge-stats').textContent = 'Erreur : ' + e.message;
+    document.getElementById('knowledge-stats').style.display = '';
+  }
+}
+
+async function launchTraining() {
+  const btn = document.getElementById('btn-launch-training');
+  const status = document.getElementById('training-status');
+  if (btn.disabled) return;
+
+  btn.disabled = true;
+  status.style.display = '';
+
+  // Ouvrir la loupe immédiatement pour voir les logs en temps réel
+  const floater = document.getElementById('log-floater');
+  if (floater && !logFloaterVisible) toggleLogFloater();
+
+  const setStatus = (msg, color) => {
+    status.style.color = color || 'var(--text3)';
+    status.textContent = msg;
+  };
+
+  try {
+    // Étape 1 — Export du dataset depuis analyses.db
+    btn.textContent = '⏳ 1/3 Export dataset…';
+    setStatus('Étape 1/3 — Export du dataset depuis la base d\'analyses…');
+    const expR = await fetch('/api/training/export', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ min_score: 5 })
+    });
+    const expRes = await expR.json();
+    if (!expR.ok) throw new Error(expRes.error || expR.statusText);
+    if (expRes.exported === 0) throw new Error(
+      'Base de connaissances vide — analysez d\'abord des fichiers malveillants'
+    );
+    setStatus(`✓ ${expRes.exported} exemples exportés — Étape 2/3 : vérification Python/Unsloth…`);
+
+    // Étape 2+3 — trainer.exe vérifie Python, installe Unsloth si absent, entraîne
+    btn.textContent = '⏳ 2/3 Vérif. Python…';
+    // Le handler /api/training/start enchaîne : checkPython → installUnsloth si absent → train
+    const trainR = await fetch('/api/training/start', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ epochs: 3, min_score: 5, dry_run: false })
+    });
+    const trainRes = await trainR.json();
+    if (!trainR.ok) throw new Error(trainRes.error || trainR.statusText);
+
+    btn.textContent = '⏳ 3/3 Entraînement…';
+    setStatus('Étape 3/3 — Fine-tuning LoRA en cours — logs dans la loupe 🔍 (15 min à 2h selon GPU)');
+
+  } catch(e) {
+    setStatus('✗ ' + e.message, 'var(--err, #f44336)');
+    toast('Erreur entraînement : ' + e.message, 'error');
+    btn.disabled = false;
+    btn.textContent = '🧠 Entraîner les IA';
+  }
+  // Note : le bouton reste disabled pendant l'entraînement (tâche de fond)
+  // Il se réactivera via un event SSE quand trainer.exe aura terminé
+}
+
+
+// ─── LOUPE LOGS FLOTTANTE ────────────────────────────────────────────────────
+let logFloaterVisible = false;
+function toggleLogFloater() {
+  const el = document.getElementById('log-floater');
+  logFloaterVisible = !logFloaterVisible;
+  if (logFloaterVisible) {
+    el.classList.add('visible');
+    state.fabErrors = 0;
+    document.getElementById('fab-badge').style.display = 'none';
+    scrollFloaterBottom();
+  } else {
+    el.classList.remove('visible');
+  }
+}
+function scrollFloaterBottom() {
+  const b = document.getElementById('log-floater-body');
+  if (b) b.scrollTop = b.scrollHeight;
+}
+function clearFloaterLogs() {
+  document.getElementById('log-floater-body').innerHTML = '';
+  document.getElementById('log-output').innerHTML = '';
+}
+
+// ── Drag fenêtre flottante ───────────────────────────────────────────────────
+let dragState = null;
+function startDragFloater(e) {
+  if (e.button !== 0) return;
+  const el = document.getElementById('log-floater');
+  const rect = el.getBoundingClientRect();
+  dragState = { startX: e.clientX, startY: e.clientY, origRight: window.innerWidth - rect.right, origBottom: window.innerHeight - rect.bottom };
+  document.addEventListener('mousemove', onDragFloater);
+  document.addEventListener('mouseup', stopDragFloater);
+  e.preventDefault();
+}
+function onDragFloater(e) {
+  if (!dragState) return;
+  const el = document.getElementById('log-floater');
+  const dx = e.clientX - dragState.startX;
+  const dy = e.clientY - dragState.startY;
+  const newRight  = Math.max(0, dragState.origRight  - dx);
+  const newBottom = Math.max(0, dragState.origBottom - dy);
+  el.style.right  = newRight  + 'px';
+  el.style.bottom = newBottom + 'px';
+  el.style.left = 'auto';
+  el.style.top  = 'auto';
+}
+function stopDragFloater() {
+  dragState = null;
+  document.removeEventListener('mousemove', onDragFloater);
+  document.removeEventListener('mouseup', stopDragFloater);
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('dash-date').textContent = new Date().toLocaleDateString('fr-FR', {weekday:'long',day:'numeric',month:'long',year:'numeric'});
+  loadConfig();
+  loadToggles();
+  updateDashboard();
+  vaultStatus();
+  initLogStream();
+  loadReportingList();
+});
+
+// ─── AUDIT SÉCURITÉ ──────────────────────────────────────────────────────────
+
+let auditCurrentPdfUrl = null;
+let auditPollingTimer  = null;
+
+// ─── REPORTING ────────────────────────────────────────────────────────────────
+async function loadReportingList() {
+  try {
+    const r = await fetch('/api/reporting/list');
+    const res = await r.json();
+    const reports = res.reports || [];
+
+    const subtitle  = document.getElementById('reporting-subtitle');
+    const emptyEl   = document.getElementById('reporting-empty');
+    const tableEl   = document.getElementById('reporting-table');
+    const tbody     = document.getElementById('reporting-tbody');
+    const badge     = document.getElementById('badge-reporting');
+
+    subtitle.textContent = reports.length + ' rapport(s) archivé(s)';
+
+    if (badge) {
+      badge.textContent = reports.length;
+      badge.style.display = reports.length > 0 ? '' : 'none';
+    }
+
+    if (reports.length === 0) {
+      emptyEl.style.display  = '';
+      tableEl.style.display  = 'none';
+      return;
+    }
+
+    emptyEl.style.display = 'none';
+    tableEl.style.display = '';
+
+    tbody.innerHTML = reports.map((rpt, i) => {
+      const typeLabel = rpt.type === 'ia'
+        ? '<span style="background:var(--accent);color:#fff;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700">IA</span>'
+        : '<span style="background:var(--text3);color:#fff;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:700">GO</span>';
+      const size = rpt.size > 1024*1024
+        ? (rpt.size/1024/1024).toFixed(1) + ' MB'
+        : Math.round(rpt.size/1024) + ' KB';
+      const bg = i % 2 === 0 ? 'var(--bg)' : 'var(--surface)';
+      return `<tr style="background:${bg};border-bottom:1px solid var(--border)">
+        <td style="padding:10px 14px;font-size:12px;color:var(--text2)">${rpt.date || '—'}</td>
+        <td style="padding:10px 14px;font-size:12px;font-family:monospace;color:var(--text)">${rpt.name}</td>
+        <td style="padding:10px 14px;text-align:center">${typeLabel}</td>
+        <td style="padding:10px 14px;text-align:right;font-size:12px;color:var(--text3)">${size}</td>
+        <td style="padding:10px 14px;text-align:center">
+          <a href="/api/reporting/download?name=${encodeURIComponent(rpt.name)}"
+             download="${rpt.name}"
+             class="btn btn-primary btn-sm" style="font-size:11px">⬇ Télécharger</a>
+        </td>
+      </tr>`;
+    }).join('');
+  } catch(e) {
+    console.error('loadReportingList:', e);
+  }
+}
+
+async function loadAuditReports() {
+  try {
+    const r   = await fetch('/api/audit/list');
+    const res = await r.json();
+    const list = document.getElementById('audit-report-list');
+    if (!res.reports || res.reports.length === 0) {
+      list.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text3);font-size:13px">Aucun rapport.<br>Lancez un audit pour commencer.</div>';
+      return;
+    }
+    list.innerHTML = res.reports.map((rpt, i) => `
+      <div class="audit-report-item" id="audit-item-${i}"
+           onclick="openAuditReport('${rpt.name}','${rpt.resultat}',${i})"
+           style="cursor:pointer;padding:10px 12px;border-radius:8px;margin-bottom:4px;border:1px solid transparent;transition:.15s">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+          <span style="font-size:11px;font-weight:700;padding:2px 7px;border-radius:4px;background:${auditResultatColor(rpt.resultat)};color:#fff">
+            ${rpt.resultat || '?'}
+          </span>
+          <span style="font-size:12px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:150px">${rpt.date}</span>
+        </div>
+        <div style="font-size:11px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${rpt.name}</div>
+      </div>
+    `).join('');
+    // Auto-ouvrir le plus récent
+    if (res.reports.length > 0) {
+      openAuditReport(res.reports[0].name, res.reports[0].resultat, 0);
+    }
+    // Toujours afficher le bouton IA si des rapports existent
+    const aiBtn = document.getElementById('btn-ai-audit');
+    if (aiBtn) {
+      aiBtn.style.display = '';
+      // Charger le contenu du dernier rapport pour _lastAuditOutput
+      if (!window._lastAuditOutput && res.reports.length > 0) {
+        try {
+          const rr = await fetch('/api/audit/report-content?name=' + encodeURIComponent(res.reports[0].name));
+          if (rr.ok) {
+            const rdata = await rr.json();
+            window._lastAuditOutput = rdata.output || rdata.content || JSON.stringify(rdata);
+            window._lastAuditPDF = res.reports[0].name;
+          }
+        } catch(e2) {
+          // Fallback : utiliser le nom du rapport comme contenu minimal
+          window._lastAuditOutput = 'Rapport: ' + res.reports[0].name;
+          window._lastAuditPDF = res.reports[0].name;
+        }
+      }
+    }
+  } catch(e) {
+    console.error('loadAuditReports:', e);
+  }
+}
+
+function auditResultatColor(r) {
+  switch ((r||'').toUpperCase()) {
+    case 'OK':          return '#16a34a';
+    case 'AVERTISSEMENT':
+    case 'WARN':        return '#d97706';
+    case 'CRITIQUE':    return '#dc2626';
+    default:            return '#6b7280';
+  }
+}
+
+function openAuditReport(name, resultat, idx) {
+  // Highlight sélectionné
+  document.querySelectorAll('.audit-report-item').forEach((el, i) => {
+    el.style.background = i === idx ? 'var(--accent-glow)' : '';
+    el.style.borderColor = i === idx ? 'rgba(59,130,246,.3)' : 'transparent';
+  });
+
+  const frame  = document.getElementById('audit-pdf-frame');
+  const empty  = document.getElementById('audit-viewer-empty');
+  const title  = document.getElementById('audit-viewer-title');
+  const dlBtn  = document.getElementById('btn-download-pdf');
+
+  const url = '/api/audit/pdf?name=' + encodeURIComponent(name);
+  auditCurrentPdfUrl = url;
+
+  frame.src = url;
+  frame.style.display = 'block';
+  empty.style.display = 'none';
+  title.textContent   = name;
+  dlBtn.style.display = '';
+}
+
+function downloadCurrentPdf() {
+  if (!auditCurrentPdfUrl) return;
+  const a = document.createElement('a');
+  a.href     = auditCurrentPdfUrl + '&download=1';
+  a.download = '';
+  a.click();
+}
+
+async function runAudit() {
+  const btn    = document.getElementById('btn-run-audit');
+  const banner = document.getElementById('audit-result-banner');
+  const running = document.getElementById('audit-running');
+  const statusMsg = document.getElementById('audit-status-msg');
+
+  btn.disabled = true;
+  btn.textContent = '⏳ Audit en cours…';
+  running.style.display = 'block';
+  banner.style.display  = 'none';
+
+  // Polling du statut
+  let dots = 0;
+  auditPollingTimer = setInterval(() => {
+    dots = (dots + 1) % 4;
+    statusMsg.textContent = 'Audit en cours' + '.'.repeat(dots);
+  }, 600);
+
+  try {
+    const r   = await fetch('/api/audit/run', { method: 'POST' });
+    const res = await r.json();
+    clearInterval(auditPollingTimer);
+    running.style.display = 'none';
+
+    const ok      = res.resultat === 'OK';
+    const warn    = (res.resultat||'').toUpperCase() === 'AVERTISSEMENT' || (res.resultat||'').toUpperCase() === 'WARN';
+    const crit    = (res.resultat||'').toUpperCase() === 'CRITIQUE';
+    const bgColor = ok ? 'rgba(22,163,74,.12)' : warn ? 'rgba(217,119,6,.12)' : 'rgba(220,38,38,.12)';
+    const border  = ok ? 'rgba(22,163,74,.3)'  : warn ? 'rgba(217,119,6,.3)'  : 'rgba(220,38,38,.3)';
+    const icon    = ok ? '✅' : warn ? '⚠️' : '🚨';
+    banner.style.cssText = `display:block;padding:14px 18px;background:${bgColor};border:1px solid ${border};border-radius:10px;font-size:13px;color:var(--text)`;
+    banner.innerHTML = `<strong>${icon} ${res.resultat}</strong> — ${res.message || 'Audit terminé'}` +
+      (crit ? '<br><span style="color:#f87171;font-size:12px;margin-top:4px;display:block">⚠ Des secrets ont été détectés. Ne pas déployer avant correction.</span>' : '');
+
+    if (crit) {
+      const badge = document.getElementById('badge-audit');
+      badge.style.display = '';
+    }
+
+    // Rafraichir la liste et ouvrir le nouveau rapport
+    await loadAuditReports();
+
+    // Afficher le bouton Rapport IA et stocker la sortie
+    window._lastAuditOutput = res.output || '';
+    window._lastAuditPDF = res.pdf || '';
+    const aiBtn = document.getElementById('btn-ai-audit');
+    if (aiBtn) aiBtn.style.display = '';
+
+  } catch(e) {
+    clearInterval(auditPollingTimer);
+    running.style.display = 'none';
+    banner.style.cssText  = 'display:block;padding:14px 18px;background:rgba(220,38,38,.12);border:1px solid rgba(220,38,38,.3);border-radius:10px;font-size:13px;color:var(--text)';
+    banner.innerHTML = '❌ Erreur lors du lancement de l\'audit : ' + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '▶ Lancer l\'audit';
+  }
+}
+// ── README ───────────────────────────────────────────────────────────────────
+let readmeLoaded = false;
+
+async function loadReadme() {
+  const el = document.getElementById('readme-content');
+  if (!el) return;
+
+  // Ne recharger que si pas encore chargé (sauf si bouton "Recharger" cliqué)
+  if (readmeLoaded && !window._readmeForceReload) return;
+  window._readmeForceReload = false;
+
+  el.innerHTML = '<div style="color:var(--text-muted);font-size:13px;">Chargement...</div>';
+  try {
+    const res = await fetch('/api/readme');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const md = await res.text();
+    // marked.js est déjà chargé via CDN
+    el.innerHTML = marked.parse(md);
+    // Ouvrir les liens dans un nouvel onglet
+    el.querySelectorAll('a[href^="http"]').forEach(a => a.setAttribute('target', '_blank'));
+    readmeLoaded = true;
+  } catch (e) {
+    el.innerHTML = '<div style="color:var(--red);font-size:13px;">Impossible de charger README.md : ' + e.message + '</div>';
+  }
+}
+
+// Forcer le rechargement quand on clique sur "↺ Recharger"
+function reloadReadme() {
+  window._readmeForceReload = true;
+  readmeLoaded = false;
+  loadReadme();
+}
+
+
+</script>
+</body>
+</html>

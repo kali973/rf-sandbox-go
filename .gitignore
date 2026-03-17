@@ -1,0 +1,57 @@
+# ── Binaires compilés ────────────────────────────────────────────────────────
+rf-sandbox.exe
+rf-sandbox
+rf-sandbox_linux
+audit.exe
+audit
+*.exe
+*.bin
+
+# ── Secrets & vault ──────────────────────────────────────────────────────────
+config/.vault.key
+scripts/config/.vault.key
+*.vault.key
+.env
+.env.*
+
+# ── Configuration locale (contient les tokens API) ───────────────────────────
+# NE PAS versionner config.json (contient api_token, même chiffré)
+# Utiliser config.json.example comme modèle
+config/config.json
+
+# ── Rapports générés ─────────────────────────────────────────────────────────
+audit/
+output/
+*.pdf
+
+# ── Dépendances Go ───────────────────────────────────────────────────────────
+vendor/
+
+# ── IDE / outils ─────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Samples / fichiers analysés ──────────────────────────────────────────────
+# Garder seulement .gitkeep
+samples/*
+!samples/.gitkeep
+!samples/batch_example.txt
+
+# ── Outils tiers (gitleaks, gosec...) ────────────────────────────────────────
+tools/*.exe
+tools/gitleaks*
+tools/gosec*
+tools/govulncheck*
+!tools/README.md
+!tools/LICENSE
+.gotmp/
