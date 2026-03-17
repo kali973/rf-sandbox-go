@@ -91,6 +91,23 @@ func New() *Client {
 	return c
 }
 
+// WithTimeout retourne une copie du client avec un timeout HTTP différent.
+// Utilisé pour les uploads de fichiers volumineux qui nécessitent plus de temps.
+func (c *Client) WithTimeout(d time.Duration) *Client {
+	clone := &Client{
+		Proxies:   c.Proxies,
+		Headers:   c.Headers,
+		AuthType:  c.AuthType,
+		Verbose:   c.Verbose,
+		ProxyUser: c.ProxyUser,
+		ProxyPass: c.ProxyPass,
+		logger:    c.logger,
+	}
+	clone.rebuild()
+	clone.http.Timeout = d
+	return clone
+}
+
 func (c *Client) SetLogger(l *log.Logger) {
 	c.logger = l
 	c.rebuild()

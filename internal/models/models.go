@@ -1,5 +1,7 @@
 package models
 
+import "encoding/json"
+
 // ─── Structures de réponse API Recorded Future Sandbox ────────────────────
 
 // Sample représente un échantillon soumis (réponse POST /samples)
@@ -45,17 +47,51 @@ type TaskSummary struct {
 }
 
 // Overview - GET /samples/{id}/overview.json
-// NOTE: Selon la doc officielle RF Sandbox, Tasks est une SLICE ([]TaskSummary), pas une map.
-// Chaque élément a un champ "sample" contenant le taskID (ex: "260309-rwz69sbyvs-behavioral1")
+// NOTE: RF Sandbox renvoie parfois Tasks comme un objet {} au lieu d'un tableau [].
+// On utilise un UnmarshalJSON custom pour gérer les deux formats.
 type Overview struct {
 	Version    string              `json:"version"`
 	Sample     OverviewSample      `json:"sample"`
-	Tasks      []OverviewTask      `json:"tasks,omitempty"` // SLICE, pas map — doc officielle
+	Tasks      []OverviewTask      `json:"-"` // géré par UnmarshalJSON
 	Analysis   OverviewAnalysis    `json:"analysis"`
 	Targets    []OverviewTarget    `json:"targets"`
 	Signatures []OverviewSignature `json:"signatures,omitempty"`
 	Extracted  []OverviewExtracted `json:"extracted,omitempty"`
 	Errors     []ReportedFailure   `json:"errors,omitempty"`
+}
+
+// UnmarshalJSON gère le fait que RF Sandbox renvoie parfois
+// "tasks": {} (objet vide) au lieu de "tasks": [] (tableau).
+func (o *Overview) UnmarshalJSON(data []byte) error {
+	// Alias pour éviter la récursion infinie
+	type OverviewAlias struct {
+		Version    string              `json:"version"`
+		Sample     OverviewSample      `json:"sample"`
+		Tasks      json.RawMessage     `json:"tasks"`
+		Analysis   OverviewAnalysis    `json:"analysis"`
+		Targets    []OverviewTarget    `json:"targets"`
+		Signatures []OverviewSignature `json:"signatures,omitempty"`
+		Extracted  []OverviewExtracted `json:"extracted,omitempty"`
+		Errors     []ReportedFailure   `json:"errors,omitempty"`
+	}
+	var alias OverviewAlias
+	if err := json.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+	o.Version = alias.Version
+	o.Sample = alias.Sample
+	o.Analysis = alias.Analysis
+	o.Targets = alias.Targets
+	o.Signatures = alias.Signatures
+	o.Extracted = alias.Extracted
+	o.Errors = alias.Errors
+
+	// Tasks : accepter tableau [] ET objet {} (RF renvoie les deux selon le statut)
+	if len(alias.Tasks) > 0 && alias.Tasks[0] == '[' {
+		json.Unmarshal(alias.Tasks, &o.Tasks) // tableau normal
+	}
+	// Si c'est un objet {} ou null → Tasks reste nil, pas d'erreur
+	return nil
 }
 
 type OverviewAnalysis struct {

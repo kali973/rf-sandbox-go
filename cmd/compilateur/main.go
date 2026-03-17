@@ -144,6 +144,22 @@ func main() {
 		}
 	}
 
+	// ── 4b. Kill rf-sandbox.exe avant compilation ────────────────────────────
+	// Windows verrouille les executables en cours d'execution.
+	// On tue le process avant de tenter de le remplacer.
+	fmt.Println("Arret de rf-sandbox.exe si en cours d'execution...")
+	killProcessByName("rf-sandbox.exe")
+	time.Sleep(800 * time.Millisecond) // laisser Windows liberer le verrou
+
+	// ── 4c. Redirection GOTMPDIR ─────────────────────────────────────────────
+	// Windows Defender scanne AppData\Local\Temp en temps réel et verrouille
+	// les fichiers temporaires créés par "go build", causant "Access is denied".
+	// Solution : utiliser un dossier tmp local au projet, exclu de l'antivirus.
+	localTmp := filepath.Join(projectDir, ".gotmp")
+	os.MkdirAll(localTmp, 0755)
+	env = append(env, "GOTMPDIR="+localTmp)
+	fmt.Printf("  -> GOTMPDIR redirige vers %s (evite le scan Defender)\n", localTmp)
+
 	// ── 5. Compilation ────────────────────────────────────────────────────────
 	fmt.Println()
 	fmt.Printf("Compilation en cours pour %s/%s...\n", goos, goarch)
@@ -181,6 +197,9 @@ func main() {
 
 	fmt.Println()
 	fmt.Printf("[OK] Compilation reussie\n")
+
+	// Nettoyage du dossier tmp local
+	os.RemoveAll(localTmp)
 
 	// ── 6. Mode USB : installation sur la clé ────────────────────────────────
 	if usbMode {
@@ -320,6 +339,42 @@ func isRemovable(drive string) bool {
 		return false
 	}
 	return strings.Contains(strings.ToLower(string(out)), "removable")
+}
+
+// killProcessByName tue tous les processus portant ce nom (Windows uniquement).
+// Utilisé pour libérer le verrou sur rf-sandbox.exe avant recompilation.
+func killProcessByName(name string) {
+	if runtime.GOOS != "windows" {
+		exec.Command("pkill", "-f", name).Run()
+		return
+	}
+	out, err := exec.Command("tasklist", "/FI", "IMAGENAME eq "+name, "/FO", "CSV", "/NH").Output()
+	if err != nil {
+		return
+	}
+	found := false
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "INFO:") {
+			continue
+		}
+		// Format CSV : "rf-sandbox.exe","1234","Console","1","12,345 Ko"
+		parts := strings.Split(line, ",")
+		if len(parts) < 2 {
+			continue
+		}
+		pid := strings.Trim(parts[1], `"`)
+		if pid == "" || pid == "0" {
+			continue
+		}
+		if err := exec.Command("taskkill", "/F", "/PID", pid).Run(); err == nil {
+			fmt.Printf("  -> rf-sandbox.exe (PID %s) arrete.\n", pid)
+			found = true
+		}
+	}
+	if !found {
+		fmt.Println("  -> rf-sandbox.exe non detecte (deja arrete).")
+	}
 }
 
 // ── Kill port ─────────────────────────────────────────────────────────────────

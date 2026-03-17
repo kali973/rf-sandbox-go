@@ -32,6 +32,16 @@ type logBroadcaster struct {
 
 var logHub = &logBroadcaster{clients: make(map[chan string]struct{})}
 
+// ── Préchauffage moteur IA ────────────────────────────────────────────────────
+// engineWarmupOnce garantit qu'on ne lance qu'un seul préchauffage en parallèle.
+// Dès le premier fichier soumis, llama-server est démarré en arrière-plan
+// pour qu'il soit prêt quand le résultat RF revient (gain de ~10-15s).
+var (
+	engineWarmupOnce sync.Once
+	engineWarmupDone = make(chan struct{}) // fermé quand le moteur est prêt
+	engineWarmupErr  error
+)
+
 // ── Session store : garde les résultats complets en mémoire ──────────────────
 // Chaque analyse/fetch stocke les résultats avec un ID de session unique.
 // Le générateur PDF récupère les données complètes (Static, Overview, etc.)
@@ -150,6 +160,7 @@ func Start(cfg ServerConfig) {
 	mux.HandleFunc("/api/submit", makeSubmitHandler(cfg))
 	mux.HandleFunc("/api/fetch", makeFetchHandler(cfg))
 	mux.HandleFunc("/api/report", makeReportHandler(cfg))
+	mux.HandleFunc("/api/warmup", makeWarmupHandler(cfg))
 	mux.HandleFunc("/api/models", makeModelsHandler(cfg))
 	mux.HandleFunc("/api/models/download", makeModelDownloadHandler(cfg))
 	mux.HandleFunc("/api/models/progress", makeModelProgressHandler())
@@ -315,6 +326,41 @@ func makeTestConnectionHandler(cfg ServerConfig) http.HandlerFunc {
 
 // ── Submit / Fetch ────────────────────────────────────────────────────────────
 
+// startEngineWarmup démarre llama-server en arrière-plan une seule fois.
+// Appelé dès qu'un fichier est soumis pour que le moteur soit prêt
+// quand RF Sandbox retourne ses résultats (1-3 min plus tard).
+func startEngineWarmup(cfg ServerConfig) {
+	engineWarmupOnce.Do(func() {
+		go func() {
+			defer close(engineWarmupDone)
+			bestModel := ai.SelectBestModel()
+			if bestModel == "" {
+				log.Println("[WARMUP] Aucun modèle IA disponible — préchauffage ignoré")
+				engineWarmupErr = fmt.Errorf("aucun modèle disponible")
+				return
+			}
+			log.Printf("[WARMUP] ⚡ Préchauffage moteur IA en parallèle — modèle : %s", ai.ModelDisplayName(bestModel))
+			llamaClient := ai.NewClient(bestModel, nil)
+			if err := llamaClient.EnsureReady(func(msg string) { log.Println(msg) }); err != nil {
+				log.Printf("[WARMUP] ⚠ Préchauffage échoué : %v", err)
+				engineWarmupErr = err
+				return
+			}
+			log.Printf("[WARMUP] ✓ Moteur IA prêt — %s opérationnel", ai.ModelDisplayName(bestModel))
+		}()
+	})
+}
+
+// makeWarmupHandler — POST /api/warmup
+// Déclenche le préchauffage manuellement (ou appelé par le JS dès le premier dépôt).
+func makeWarmupHandler(cfg ServerConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		startEngineWarmup(cfg)
+		json.NewEncoder(w).Encode(map[string]string{"status": "warmup_started"})
+	}
+}
+
 func makeSubmitHandler(cfg ServerConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -322,6 +368,11 @@ func makeSubmitHandler(cfg ServerConfig) http.HandlerFunc {
 			jsonError(w, "méthode non autorisée", 405)
 			return
 		}
+
+		// ⚡ Préchauffage immédiat du moteur IA en parallèle
+		// RF Sandbox met 1-3 min à analyser — on profite de ce temps
+		// pour démarrer llama-server afin qu'il soit prêt dès les résultats.
+		startEngineWarmup(cfg)
 
 		token := liveToken(cfg.ConfigPath, cfg.APIToken)
 		proxy := liveProxy(cfg.ConfigPath, cfg.Proxy)
@@ -696,7 +747,20 @@ func generateWithAI(cfg ServerConfig, results []*models.AnalysisResult, outputPa
 	type engineResult struct{ err error }
 	engineCh := make(chan engineResult, 1)
 	go func() {
-		engineCh <- engineResult{err: llamaClient.EnsureReady(progress)}
+		// Si le préchauffage est déjà terminé, on n'a pas besoin de relancer EnsureReady
+		select {
+		case <-engineWarmupDone:
+			// Moteur déjà chaud depuis le préchauffage
+			if engineWarmupErr != nil {
+				engineCh <- engineResult{err: engineWarmupErr}
+			} else {
+				progress(ai.CInfo("[AI] ✓ Moteur IA déjà préchauffé — démarrage immédiat"))
+				engineCh <- engineResult{err: nil}
+			}
+		default:
+			// Préchauffage pas encore terminé — attendre ou démarrer
+			engineCh <- engineResult{err: llamaClient.EnsureReady(progress)}
+		}
 	}()
 
 	progress(ai.CInfo("[AI] Construction du prompt management..."))
