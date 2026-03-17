@@ -54,4 +54,3 @@ tools/gosec*
 tools/govulncheck*
 !tools/README.md
 !tools/LICENSE
-.gotmp/

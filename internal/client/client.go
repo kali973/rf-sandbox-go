@@ -171,18 +171,13 @@ func (c *Client) postMultipart(path string, filePath string, private bool, out i
 	}
 	mw.Close()
 
-	// Utiliser un client avec timeout long pour l'upload (fichiers volumineux sur proxy NTLM)
-	// Le timeout standard de 60s est insuffisant pour des .7z de plusieurs Mo.
-	uploadClient := c.session.WithTimeout(10 * time.Minute)
-
-	resp, err := uploadClient.Post(BaseURL+path, buf.Bytes(), map[string]string{
+	resp, err := c.session.Post(BaseURL+path, buf.Bytes(), map[string]string{
 		"Content-Type": mw.FormDataContentType(),
 	})
 	if err != nil {
 		if _, ok := err.(*httpclient.ProxyError); ok {
-			// Proxy en erreur → retry en connexion directe
-			uploadClient.ClearProxy()
-			resp, err = uploadClient.Post(BaseURL+path, buf.Bytes(), map[string]string{
+			c.session.ClearProxy()
+			resp, err = c.session.Post(BaseURL+path, buf.Bytes(), map[string]string{
 				"Content-Type": mw.FormDataContentType(),
 			})
 		}
@@ -359,152 +354,149 @@ func (c *Client) fetchResults(sampleID string) (*models.AnalysisResult, error) {
 	r.Tags = uniqueStrings(r.Tags)
 
 	// ── 2. Overview ──────────────────────────────────────────────────────
-	// overview.json n'est disponible que quand l'analyse est en statut "reported".
-	// Pour les fichiers non-executables recuperes en partiel (running/static_analysis),
-	// RF Sandbox n'a pas encore genere l'overview → on skippe pour eviter le 404.
-	overviewAvailable := summary.Status == "reported"
 	var overview models.Overview
-	if overviewAvailable {
-		if err := c.get("/samples/"+sampleID+"/overview.json", &overview); err != nil {
-			c.logger.Printf("[WARN] overview.json indisponible pour %s: %v", sampleID, err)
-		} else {
-			r.Overview = &overview
-			// Hashes complets depuis overview
-			r.Hashes = models.Hashes{
-				MD5:    overview.Sample.MD5,
-				SHA1:   overview.Sample.SHA1,
-				SHA256: overview.Sample.SHA256,
-				SHA512: overview.Sample.SHA512,
+	if err := c.get("/samples/"+sampleID+"/overview.json", &overview); err != nil {
+		c.logger.Printf("[WARN] overview.json indisponible pour %s: %v", sampleID, err)
+	} else {
+		r.Overview = &overview
+		// Hashes complets depuis overview
+		r.Hashes = models.Hashes{
+			MD5:    overview.Sample.MD5,
+			SHA1:   overview.Sample.SHA1,
+			SHA256: overview.Sample.SHA256,
+			SHA512: overview.Sample.SHA512,
+		}
+		if r.Filename == "" || r.Filename == sampleID {
+			r.Filename = overview.Sample.Target
+		}
+		// Tags globaux depuis overview.Analysis
+		r.Tags = append(r.Tags, overview.Analysis.Tags...)
+		// Famille depuis overview
+		if r.Family == "" && len(overview.Analysis.Family) > 0 {
+			r.Family = strings.Join(overview.Analysis.Family, ", ")
+		}
+		// Signatures agrégées depuis overview.Targets (source principale)
+		// ET depuis overview.Signatures (top-level, si présentes)
+		sigSeen := map[string]bool{}
+		collectSig := func(sig models.OverviewSignature, taskHint string) {
+			if sigSeen[sig.Name] {
+				return
 			}
-			if r.Filename == "" || r.Filename == sampleID {
-				r.Filename = overview.Sample.Target
+			sigSeen[sig.Name] = true
+			r.Signatures = append(r.Signatures, models.AggregatedSignature{
+				TaskID: taskHint,
+				Signature: models.Signature{
+					Label:      sig.Label,
+					Name:       sig.Name,
+					Score:      sig.Score,
+					Tags:       sig.Tags,
+					TTP:        sig.TTP,
+					Desc:       sig.Desc,
+					Indicators: sig.Indicators,
+				},
+			})
+		}
+		// Priorité : targets (plus détaillés, par fichier analysé)
+		for _, tgt := range overview.Targets {
+			hint := strings.Join(tgt.Tasks, ",")
+			for _, sig := range tgt.Signatures {
+				collectSig(sig, hint)
 			}
-			// Tags globaux depuis overview.Analysis
-			r.Tags = append(r.Tags, overview.Analysis.Tags...)
-			// Famille depuis overview
-			if r.Family == "" && len(overview.Analysis.Family) > 0 {
-				r.Family = strings.Join(overview.Analysis.Family, ", ")
+			// Tags & famille par target
+			r.Tags = append(r.Tags, tgt.Tags...)
+			if r.Family == "" && len(tgt.Family) > 0 {
+				r.Family = strings.Join(tgt.Family, ", ")
 			}
-			// Signatures agrégées depuis overview.Targets (source principale)
-			// ET depuis overview.Signatures (top-level, si présentes)
-			sigSeen := map[string]bool{}
-			collectSig := func(sig models.OverviewSignature, taskHint string) {
-				if sigSeen[sig.Name] {
-					return
+			// IOCs par target
+			if tgt.IOCs != nil {
+				r.IOCs.IPs = append(r.IOCs.IPs, tgt.IOCs.IPs...)
+				r.IOCs.Domains = append(r.IOCs.Domains, tgt.IOCs.Domains...)
+				r.IOCs.URLs = append(r.IOCs.URLs, tgt.IOCs.URLs...)
+			}
+		}
+		// Top-level signatures en complément (évite les doublons via sigSeen)
+		for _, sig := range overview.Signatures {
+			collectSig(sig, "overview")
+		}
+		// IOCs consolidés
+		if iocs := overview.Sample.IOCs; iocs != nil {
+			r.IOCs.IPs = append(r.IOCs.IPs, iocs.IPs...)
+			r.IOCs.Domains = append(r.IOCs.Domains, iocs.Domains...)
+			r.IOCs.URLs = append(r.IOCs.URLs, iocs.URLs...)
+		}
+		// Configs malware extraites (C2, botnet, clés, mutex, commandes…)
+		for _, ex := range overview.Extracted {
+			r.Extracted = append(r.Extracted, models.ExtractWithTask{
+				TaskID:  strings.Join(ex.Tasks, ","),
+				Extract: ex.Extract,
+			})
+			if ex.Config != nil {
+				cfg := ex.Config
+				if cfg.Botnet != "" {
+					r.IOCs.Mutexes = append(r.IOCs.Mutexes, "botnet:"+cfg.Botnet)
 				}
-				sigSeen[sig.Name] = true
-				r.Signatures = append(r.Signatures, models.AggregatedSignature{
-					TaskID: taskHint,
-					Signature: models.Signature{
-						Label:      sig.Label,
-						Name:       sig.Name,
-						Score:      sig.Score,
-						Tags:       sig.Tags,
-						TTP:        sig.TTP,
-						Desc:       sig.Desc,
-						Indicators: sig.Indicators,
+				r.IOCs.IPs = append(r.IOCs.IPs, cfg.C2...)
+				r.IOCs.Domains = append(r.IOCs.Domains, cfg.DNS...)
+				r.IOCs.Mutexes = append(r.IOCs.Mutexes, cfg.Mutex...)
+				// CommandLines : chercher URLs embarquées
+				for _, cmd := range cfg.CommandLines {
+					if strings.Contains(cmd, "http://") || strings.Contains(cmd, "https://") {
+						r.IOCs.URLs = append(r.IOCs.URLs, cmd)
+					}
+					c.logger.Printf("[INFO] commande config overview : %s", truncateLog(cmd, 200))
+				}
+				// Famille malware
+				if r.Family == "" && cfg.Family != "" {
+					r.Family = cfg.Family
+				}
+			}
+			// URLs de dropper (payload download URLs — très importantes pour l'analyse)
+			if ex.Dropper != nil {
+				for _, du := range ex.Dropper.URLs {
+					if du.URL != "" {
+						r.IOCs.URLs = append(r.IOCs.URLs, du.URL)
+						c.logger.Printf("[INFO] dropper URL détectée : %s (type: %s)", du.URL, du.Type)
+					}
+				}
+			}
+		}
+
+		// Enrichir r.Tasks depuis overview.Tasks (SLICE officielle — champ "sample" = taskID complet)
+		for _, ot := range overview.Tasks {
+			taskID := ot.Sample // ex: "260309-rwz69sbyvs-behavioral1"
+			if taskID == "" {
+				continue
+			}
+			if existing, ok := r.Tasks[taskID]; ok {
+				if ot.Score > 0 && existing.TaskSummary.Score == 0 {
+					existing.TaskSummary.Score = ot.Score
+				}
+				existing.TaskSummary.Tags = uniqueStrings(append(existing.TaskSummary.Tags, ot.Tags...))
+				existing.TaskSummary.TTP = uniqueStrings(append(existing.TaskSummary.TTP, ot.TTP...))
+				r.Tasks[taskID] = existing
+			} else {
+				r.Tasks[taskID] = models.TaskResult{
+					TaskSummary: models.TaskSummary{
+						Kind:     ot.Kind,
+						Status:   ot.Status,
+						Tags:     ot.Tags,
+						TTP:      ot.TTP,
+						Score:    ot.Score,
+						Target:   ot.Target,
+						Backend:  ot.Backend,
+						Resource: ot.Resource,
+						Platform: ot.Platform,
+						TaskName: ot.TaskName,
 					},
-				})
-			}
-			// Priorité : targets (plus détaillés, par fichier analysé)
-			for _, tgt := range overview.Targets {
-				hint := strings.Join(tgt.Tasks, ",")
-				for _, sig := range tgt.Signatures {
-					collectSig(sig, hint)
-				}
-				// Tags & famille par target
-				r.Tags = append(r.Tags, tgt.Tags...)
-				if r.Family == "" && len(tgt.Family) > 0 {
-					r.Family = strings.Join(tgt.Family, ", ")
-				}
-				// IOCs par target
-				if tgt.IOCs != nil {
-					r.IOCs.IPs = append(r.IOCs.IPs, tgt.IOCs.IPs...)
-					r.IOCs.Domains = append(r.IOCs.Domains, tgt.IOCs.Domains...)
-					r.IOCs.URLs = append(r.IOCs.URLs, tgt.IOCs.URLs...)
 				}
 			}
-			// Top-level signatures en complément (évite les doublons via sigSeen)
-			for _, sig := range overview.Signatures {
-				collectSig(sig, "overview")
-			}
-			// IOCs consolidés
-			if iocs := overview.Sample.IOCs; iocs != nil {
-				r.IOCs.IPs = append(r.IOCs.IPs, iocs.IPs...)
-				r.IOCs.Domains = append(r.IOCs.Domains, iocs.Domains...)
-				r.IOCs.URLs = append(r.IOCs.URLs, iocs.URLs...)
-			}
-			// Configs malware extraites (C2, botnet, clés, mutex, commandes…)
-			for _, ex := range overview.Extracted {
-				r.Extracted = append(r.Extracted, models.ExtractWithTask{
-					TaskID:  strings.Join(ex.Tasks, ","),
-					Extract: ex.Extract,
-				})
-				if ex.Config != nil {
-					cfg := ex.Config
-					if cfg.Botnet != "" {
-						r.IOCs.Mutexes = append(r.IOCs.Mutexes, "botnet:"+cfg.Botnet)
-					}
-					r.IOCs.IPs = append(r.IOCs.IPs, cfg.C2...)
-					r.IOCs.Domains = append(r.IOCs.Domains, cfg.DNS...)
-					r.IOCs.Mutexes = append(r.IOCs.Mutexes, cfg.Mutex...)
-					for _, cmd := range cfg.CommandLines {
-						if strings.Contains(cmd, "http://") || strings.Contains(cmd, "https://") {
-							r.IOCs.URLs = append(r.IOCs.URLs, cmd)
-						}
-						c.logger.Printf("[INFO] commande config overview : %s", truncateLog(cmd, 200))
-					}
-					if r.Family == "" && cfg.Family != "" {
-						r.Family = cfg.Family
-					}
-				}
-				// URLs de dropper (payload download URLs — très importantes pour l'analyse)
-				if ex.Dropper != nil {
-					for _, du := range ex.Dropper.URLs {
-						if du.URL != "" {
-							r.IOCs.URLs = append(r.IOCs.URLs, du.URL)
-							c.logger.Printf("[INFO] dropper URL détectée : %s (type: %s)", du.URL, du.Type)
-						}
-					}
+			for _, t := range ot.Tags {
+				if strings.HasPrefix(t, "family:") && r.Family == "" {
+					r.Family = strings.TrimPrefix(t, "family:")
 				}
 			}
-			// Enrichir r.Tasks depuis overview.Tasks
-			for _, ot := range overview.Tasks {
-				taskID := ot.Sample
-				if taskID == "" {
-					continue
-				}
-				if existing, ok := r.Tasks[taskID]; ok {
-					if ot.Score > 0 && existing.TaskSummary.Score == 0 {
-						existing.TaskSummary.Score = ot.Score
-					}
-					existing.TaskSummary.Tags = uniqueStrings(append(existing.TaskSummary.Tags, ot.Tags...))
-					existing.TaskSummary.TTP = uniqueStrings(append(existing.TaskSummary.TTP, ot.TTP...))
-					r.Tasks[taskID] = existing
-				} else {
-					r.Tasks[taskID] = models.TaskResult{
-						TaskSummary: models.TaskSummary{
-							Kind:     ot.Kind,
-							Status:   ot.Status,
-							Tags:     ot.Tags,
-							TTP:      ot.TTP,
-							Score:    ot.Score,
-							Target:   ot.Target,
-							Backend:  ot.Backend,
-							Resource: ot.Resource,
-							Platform: ot.Platform,
-							TaskName: ot.TaskName,
-						},
-					}
-				}
-				for _, t := range ot.Tags {
-					if strings.HasPrefix(t, "family:") && r.Family == "" {
-						r.Family = strings.TrimPrefix(t, "family:")
-					}
-				}
-			}
-		} // fin else overview disponible
-	} // fin if overviewAvailable
+		}
+	}
 
 	// ── 2bis. Rapport Statique ───────────────────────────────────────────
 	var staticReport models.StaticReport

@@ -1682,9 +1682,6 @@ async function submitAnalysis() {
   // Vider les items terminés/en erreur de la queue pour éviter les faux matchs
   state.queue = state.queue.filter(q => q.status === 'running');
 
-  // ⚡ Préchauffer le moteur IA immédiatement — en parallèle de l'analyse RF
-  fetch('/api/warmup', { method: 'POST' }).catch(() => {});
-
   let completed = 0;
   for (let i = 0; i < targets.length; i++) {
     const t = targets[i];
@@ -1714,15 +1711,6 @@ async function submitAnalysis() {
       completed++;
       toast('✓ ' + t.name.split('/').pop() + ' — Score: ' + result.score + '/10',
         result.score >= 7 ? 'error' : result.score >= 4 ? 'info' : 'success');
-
-      // ── Rapport IA individuel — généré immédiatement après chaque fichier ──
-      // Chaque fichier obtient son propre rapport PDF indépendant.
-      // On n'attend pas la fin du lot complet.
-      if (result.session_id) {
-        toast(`🤖 Rapport IA en cours pour ${t.name.split('/').pop()}...`, 'info');
-        generatePDFForSession([result.session_id]);
-      }
-
     } catch(e) {
       if (qIdx >= 0) state.queue[qIdx].status = 'error';
       toast('Erreur : ' + t.name + ' — ' + e.message, 'error');
@@ -1743,6 +1731,13 @@ async function submitAnalysis() {
       state.queue = state.queue.filter(q => q.status !== 'done');
       renderQueue(); updateBadges();
     }, 5000);
+
+    // ── Génération automatique du rapport IA ───────────────────────────────
+    if (state.sessionIds.length > 0) {
+      toast('🤖 Génération du rapport IA en cours...', 'info');
+      showPage('results');
+      setTimeout(() => generatePDF(), 800);
+    }
   }
 
   // ── Fichiers en attente : traiter le prochain lot ─────────────────────
@@ -1865,18 +1860,15 @@ function exportResults() {
 async function generatePDF() {
   if (!state.results.length) { toast('Aucun résultat à exporter', 'error'); return; }
   if (!state.sessionIds.length) { toast('Sessions expirées — relancez une analyse', 'error'); return; }
-  await generatePDFForSession(state.sessionIds.slice());
-}
 
-// generatePDFForSession : génère un rapport PDF pour une liste de session IDs.
-// Appelé après chaque fichier individuel OU manuellement.
-async function generatePDFForSession(sessionIds) {
+  const sessionIdsToSend = state.sessionIds.slice();
+
   try {
     const resp = await fetch('/api/report', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
-        session_ids:          sessionIds,
+        session_ids:          sessionIdsToSend,
         tlp:                  document.getElementById('tlp-select')?.value || 'TLP:WHITE',
         use_mitre:            getToggles().mitre,
         use_abuseipdb:        getToggles().abuseipdb,
@@ -1889,11 +1881,17 @@ async function generatePDFForSession(sessionIds) {
       const err = await resp.json().catch(() => ({error: resp.statusText}));
       throw new Error(err.error || resp.statusText);
     }
-    // Le rapport est archivé dans reporting/ côté serveur — pas besoin de télécharger.
-    // On consomme quand même le body pour libérer la connexion.
-    await resp.blob();
-    toast('✅ Rapport IA généré — disponible dans l\'onglet Rapports IA', 'success');
-    showPage('reporting');
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const cd = resp.headers.get('Content-Disposition') || '';
+    const match = cd.match(/filename="([^"]+)"/);
+    a.download = match ? match[1] : 'rapport.pdf';
+    a.href = url;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast('Rapport PDF téléchargé ✓', 'success');
+    // Mettre à jour le badge et la liste reporting
     loadReportingList();
   } catch(e) {
     toast('Erreur PDF : ' + e.message, 'error');
