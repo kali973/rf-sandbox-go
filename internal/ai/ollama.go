@@ -26,14 +26,15 @@ import (
 )
 
 const (
-	llamaPort      = "18081"
-	LlamaBaseURL   = "http://localhost:" + llamaPort
-	DefaultModel   = "mistral-7b-instruct-v0.2.Q4_K_M.gguf"
-	FallbackModel  = "Qwen2.5-14B-Instruct-Q4_K_M.gguf" // moteur secondaire — meilleure gestion JSON structuré
-	PrimusModel    = "Llama-Primus-8B-Q3_K_M.gguf"      // Trend Micro Primus 8B — spécialisé cybersécurité/CTI
-	startupTimeout = 120 * time.Second
-	httpTimeout    = 10 * time.Second // pour health checks uniquement
-	genTimeout     = 0                // sans limite pour la génération IA (prompt ~20k tokens)
+	llamaPort          = "18081"
+	LlamaBaseURL       = "http://localhost:" + llamaPort
+	DefaultModel       = "mistral-7b-instruct-v0.2.Q4_K_M.gguf"
+	FallbackModel      = "Qwen2.5-14B-Instruct-Q4_K_M.gguf"       // moteur secondaire — meilleure gestion JSON structuré
+	PrimusModel        = "Llama-Primus-8B-Q3_K_M.gguf"            // Trend Micro Primus 8B — spécialisé cybersécurité/CTI
+	FoundationSecModel = "Foundation-Sec-8B-Instruct-Q4_K_M.gguf" // Cisco Foundation-Sec-8B — cybersécurité, fine-tunable
+	startupTimeout     = 120 * time.Second
+	httpTimeout        = 10 * time.Second // pour health checks uniquement
+	genTimeout         = 0                // sans limite pour la génération IA (prompt ~20k tokens)
 
 	// Llama.cpp release depuis GitHub — tag b8185 (2026-03-02)
 	llamaCppWindowsMain = "https://github.com/ggml-org/llama.cpp/releases/download/b8185/llama-b8185-bin-win-cuda-cu12.4-x64.zip"
@@ -58,6 +59,12 @@ const (
 	primusRepoID   = "tensorblock/Llama-Primus-Merged-GGUF"
 	primusGGUFFile = "Llama-Primus-Merged-Q3_K_M.gguf"
 	primusGGUFURL  = "https://huggingface.co/" + primusRepoID + "/resolve/main/" + primusGGUFFile
+
+	// Foundation-Sec-8B Instruct Q4_K_M — Cisco (Apache 2.0, publié avril 2025)
+	// LLaMA 3.1 8B continued-pretrained sur corpus cybersécurité (CVEs, CTI, exploit write-ups)
+	// Seul modèle du projet entraînable localement via Unsloth QLoRA sur le dataset analyses.db
+	// Source : fdtn-ai/Foundation-Sec-8B-Instruct + mradermacher/Foundation-Sec-8B-Instruct-GGUF
+	foundationSecGGUFURL = "https://huggingface.co/mradermacher/Foundation-Sec-8B-Instruct-GGUF/resolve/main/Foundation-Sec-8B-Instruct.Q4_K_M.gguf"
 )
 
 // ─── Catalogue des modèles connus ────────────────────────────────────────────
@@ -112,6 +119,17 @@ var KnownModels = map[string]ModelInfo{
 		Gated:         false,
 		ManualInstall: false,
 		GatedNote:     "",
+	},
+	FoundationSecModel: {
+		Filename:    FoundationSecModel,
+		DisplayName: "Foundation-Sec-8B Instruct (Cisco)",
+		Description: "LLaMA 3.1 8B continued-pretrained sur corpus cybersécurité par Cisco (CVEs, CTI, exploit write-ups, compliance). Licence Apache 2.0. Seul modèle fine-tunable localement avec le dataset analyses.db.",
+		VRAMMinGB:   6,
+		SizeGB:      4.92,
+		DownloadURL: foundationSecGGUFURL,
+		SourceURL:   "https://huggingface.co/fdtn-ai/Foundation-Sec-8B-Instruct",
+		Specialty:   "cyber",
+		Gated:       false,
 	},
 }
 
@@ -788,10 +806,11 @@ func (p *MachineProfile) computeOptimalConfig() {
 
 		// Context window selon VRAM disponible
 		// Le cache KV consomme ~2 * ctx * layers * head_size * 2 bytes
-		// Pour Mistral 7B : ctx=32768 ≈ 2 Go VRAM pour le KV cache
-		if p.VRAMFreeGB >= 8 {
+		// Pour Qwen 14B Q4 : ctx=32768 tient dans 7+ Go VRAM (le modèle spill en RAM)
+		// IMPORTANT : le seuil passe de 8 Go à 6 Go pour couvrir RTX 4060 (7.2 Go libre)
+		if p.VRAMFreeGB >= 6 {
 			p.CtxSize = 32768
-		} else if p.VRAMFreeGB >= 4 {
+		} else if p.VRAMFreeGB >= 3 {
 			p.CtxSize = 16384
 		} else {
 			p.CtxSize = 8192 // VRAM très serrée
@@ -1255,12 +1274,76 @@ func EnsurePrimusModel(progressFn func(string)) {
 	progressFn(logOK("AI-PRIMUS", fmt.Sprintf("Primus 8B téléchargé → moteur/models/%s", PrimusModel)))
 }
 
-// ─── Generation ──────────────────────────────────────────────────────────────
+// EnsureFoundationSecModel télécharge Foundation-Sec-8B Instruct Q4_K_M depuis mradermacher.
+// Modèle Cisco Apache 2.0 — public, aucun token requis.
+// C'est le seul modèle du projet fine-tunable via Unsloth QLoRA.
+func EnsureFoundationSecModel(progressFn func(string)) {
+	mDir := moteurDir()
+	if modelPresent(mDir, FoundationSecModel) {
+		progressFn(logOK("AI-FOUNDATION", fmt.Sprintf("Foundation-Sec-8B déjà présent : %s", FoundationSecModel)))
+		return
+	}
+	progressFn(logInfo("AI-FOUNDATION", "Téléchargement Foundation-Sec-8B Instruct Q4_K_M (~4.9 Go)..."))
+	progressFn(logInfo("AI-FOUNDATION", "Source : mradermacher/Foundation-Sec-8B-Instruct-GGUF (Cisco, Apache 2.0)"))
+	progressFn(logInfo("AI-FOUNDATION", "Aucun token Hugging Face requis — repo public."))
+	dest := modelPath(mDir, FoundationSecModel)
+	if err := downloadResumable(foundationSecGGUFURL, dest, progressFn); err != nil {
+		progressFn(logErr("AI-FOUNDATION", fmt.Sprintf("Téléchargement Foundation-Sec-8B échoué: %v", err)))
+		return
+	}
+	progressFn(logOK("AI-FOUNDATION", fmt.Sprintf("Foundation-Sec-8B téléchargé → moteur/models/%s", FoundationSecModel)))
+	progressFn(logOK("AI-FOUNDATION", "Modèle prêt — sera utilisé en priorité pour les analyses cybersécurité"))
+	progressFn(logOK("AI-FOUNDATION", "Fine-tuning disponible via Unsloth QLoRA avec le dataset analyses.db"))
+}
+
+// EnsureModelByURL télécharge un modèle GGUF quelconque depuis une URL directe.
+// Utilisé pour les modèles du catalogue qui n'ont pas de fonction dédiée.
+func EnsureModelByURL(filename, url string, progressFn func(string)) {
+	mDir := moteurDir()
+	if modelPresent(mDir, filename) {
+		progressFn(logOK("AI-DOWNLOAD", fmt.Sprintf("%s déjà présent", filename)))
+		return
+	}
+	progressFn(logInfo("AI-DOWNLOAD", fmt.Sprintf("Téléchargement %s...", filename)))
+	progressFn(logInfo("AI-DOWNLOAD", fmt.Sprintf("Source : %s", url)))
+	dest := modelPath(mDir, filename)
+	if err := downloadResumable(url, dest, progressFn); err != nil {
+		progressFn(logErr("AI-DOWNLOAD", fmt.Sprintf("Téléchargement %s échoué: %v", filename, err)))
+		return
+	}
+	progressFn(logOK("AI-DOWNLOAD", fmt.Sprintf("%s téléchargé → moteur/models/%s", filename, filename)))
+}
 
 func (c *Client) Generate(prompt string, progressFn func(string)) (string, error) {
 	// Analyse dynamique pour max_tokens adapté à la machine
 	profile := analyseMachine(nil)
 	maxTokens := profile.MaxOutputTok
+
+	// ── Garde-fou : troncature du prompt si trop grand ───────────────────────
+	// Règle empirique llama.cpp : 1 token ≈ 3.5 caractères pour du JSON/français.
+	// On réserve 50% du contexte pour la sortie, et on laisse une marge de sécurité
+	// de 10% pour les tokens spéciaux et le system prompt interne du modèle.
+	maxPromptChars := int(float64(profile.CtxSize) * 0.40 * 3.5) // 40% du ctx × 3.5 chars/token
+	if len(prompt) > maxPromptChars {
+		if progressFn != nil {
+			progressFn(logWarn("AI", fmt.Sprintf(
+				"Prompt trop long (%d chars > %d max) — troncature automatique des données sandbox",
+				len(prompt), maxPromptChars,
+			)))
+		}
+		// Tronquer proprement : garder l'en-tête du prompt (instructions) + fin (schéma JSON)
+		// La partie centrale (données sandbox JSON) est la moins critique à tronquer
+		keepHead := maxPromptChars * 30 / 100 // 30% = instructions + début données
+		keepTail := maxPromptChars * 30 / 100 // 30% = schéma JSON de sortie
+		if keepHead+keepTail < len(prompt) {
+			prompt = prompt[:keepHead] + "\n\n[... données tronquées pour respecter la fenêtre de contexte — analyser les éléments disponibles ...]\n\n" + prompt[len(prompt)-keepTail:]
+		} else {
+			prompt = prompt[:maxPromptChars]
+		}
+		if progressFn != nil {
+			progressFn(logInfo("AI", fmt.Sprintf("Prompt après troncature : %d chars", len(prompt))))
+		}
+	}
 
 	if progressFn != nil {
 		progressFn(cHeader("AI", "GÉNÉRATION IA  —  llama.cpp"))
@@ -1515,16 +1598,40 @@ func formatBytes(b int64) string {
 }
 
 // SelectBestModel retourne le modèle le plus puissant disponible sur disque.
-// Critères : taille > paramètres > catalogue préféré.
-// Utilisé pour la génération de rapports PDF.
+// Priorité : Foundation-Sec-8B (cyber spécialisé + fine-tunable) > Qwen 14B (plus grand) >
+//
+//	Primus 8B (cyber Trend Micro) > Mistral 7B (généraliste)
 func SelectBestModel() string {
-	models := ListAvailableModels()
-	if len(models) == 0 {
-		return DefaultModel
+	mDir := moteurDir()
+	// Ordre de priorité explicite — le premier présent sur disque gagne
+	priority := []string{
+		FoundationSecModel, // Cisco cyber LLM, fin-tunable — priorité max si présent
+		FallbackModel,      // Qwen 14B — plus grand, meilleur JSON
+		PrimusModel,        // Trend Micro cyber
+		DefaultModel,       // Mistral 7B — fallback généraliste
 	}
-	// Trier par taille décroissante
-	sort.Slice(models, func(i, j int) bool {
-		return models[i].SizeGB > models[j].SizeGB
-	})
-	return models[0].Filename
+	for _, m := range priority {
+		if modelPresent(mDir, m) {
+			return m
+		}
+	}
+	// Aucun modèle connu — chercher n'importe quel GGUF présent
+	models := ListAvailableModels()
+	if len(models) > 0 {
+		sort.Slice(models, func(i, j int) bool { return models[i].SizeGB > models[j].SizeGB })
+		return models[0].Filename
+	}
+	return DefaultModel
+}
+
+// FoundationSecModelPresent indique si Foundation-Sec-8B est disponible.
+func FoundationSecModelPresent() bool {
+	return modelPresent(moteurDir(), FoundationSecModel)
+}
+
+// IsFineTunable retourne true si le modèle peut être fine-tuné localement via Unsloth QLoRA.
+// Seul Foundation-Sec-8B (LLaMA 3.1 8B base) est entraînable — les autres sont quantifiés
+// ou reposent sur des architectures propriétaires non redistribuables en FP16.
+func IsFineTunable(filename string) bool {
+	return filename == FoundationSecModel
 }

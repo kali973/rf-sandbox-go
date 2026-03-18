@@ -1824,14 +1824,21 @@ func makeModelDownloadHandler(cfg ServerConfig) http.HandlerFunc {
 
 		// Lancer le téléchargement en arrière-plan
 		go func() {
+			progressFn := func(msg string) { log.Println(msg) }
 			switch req.Filename {
+			case ai.FoundationSecModel:
+				ai.EnsureFoundationSecModel(progressFn)
 			case ai.PrimusModel:
-				ai.EnsurePrimusModel(func(msg string) { log.Println(msg) })
+				ai.EnsurePrimusModel(progressFn)
 			case ai.FallbackModel:
-				ai.EnsureFallbackModel(func(msg string) { log.Println(msg) })
+				ai.EnsureFallbackModel(progressFn)
 			default:
-				// Pour les autres modèles du catalogue
-				ai.EnsureFallbackModel(func(msg string) { log.Println(msg) })
+				// Modèle du catalogue avec DownloadURL — téléchargement générique
+				if info.DownloadURL != "" {
+					ai.EnsureModelByURL(req.Filename, info.DownloadURL, progressFn)
+				} else {
+					log.Printf("[DOWNLOAD] Pas d'URL pour %s — installation manuelle requise", req.Filename)
+				}
 			}
 		}()
 

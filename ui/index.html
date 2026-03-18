@@ -767,7 +767,7 @@
     <div class="page" id="page-queue">
       <div class="page-header">
         <div class="page-title">File d'attente</div>
-        <div class="page-subtitle">Analyses en cours de traitement</div>
+        <div class="page-subtitle">Soumission RF Sandbox → Analyse → Génération rapport IA</div>
       </div>
       <div class="card">
         <div id="queue-empty" class="empty-state">
@@ -1044,11 +1044,81 @@
           <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
             <button class="btn btn-primary btn-sm" onclick="saveAnalysisConfig()" data-tip="Sauvegarde la clé AbuseIPDB et les&#10;options d'analyse dans config.json">💾 Sauvegarder</button>
             <button class="btn btn-secondary btn-sm" id="btn-knowledge-stats" onclick="loadKnowledgeStats()" data-tip="Affiche le nombre d'analyses mémorisées&#10;dans la base de connaissances SQLite">📊 Stats base</button>
-            <button class="btn btn-warning btn-sm" id="btn-launch-training" onclick="launchTraining()" data-tip="Fine-tuning LoRA de Mistral 7B — 100% Go, zéro Python.&#10;• Export dataset automatique&#10;• llama-finetune natif (même zip que llama-server)&#10;• Logs en temps réel dans la loupe 🔍">🧠 Entraîner les IA</button>
           </div>
-          <div id="knowledge-stats"  style="margin-top:10px;font-size:12px;color:var(--text3);display:none"></div>
-          <div id="training-status"  style="margin-top:10px;font-size:12px;display:none"></div>
+          <div id="knowledge-stats" style="margin-top:10px;font-size:12px;color:var(--text3);display:none"></div>
         </div>
+
+        <!-- ══ SECTION ENTRAÎNEMENT IA ══ -->
+        <div class="card" style="margin-top:16px">
+          <div class="card-title">🧠 Entraînement IA — Foundation-Sec-8B</div>
+
+          <!-- Explication du modèle dédié -->
+          <div style="padding:12px 14px;background:rgba(37,99,235,.06);border:1px solid rgba(37,99,235,.2);border-radius:6px;margin-bottom:16px">
+            <div style="font-size:12px;font-weight:600;color:#60a5fa;margin-bottom:6px">🔬 Seul modèle fine-tunable du projet — Foundation-Sec-8B Instruct (Cisco)</div>
+            <div style="font-size:11px;color:var(--text2);line-height:1.7">
+              LLaMA 3.1 8B entraîné en continu par Cisco sur un corpus cybersécurité curé (CVEs, CTI, exploit write-ups, guides de conformité). <strong>Apache 2.0 — ~4.9 Go.</strong><br>
+              C'est le seul modèle du projet basé sur une architecture <em>ouverte non-propriétaire</em> pouvant être fine-tuné via <strong>Unsloth QLoRA</strong> avec le dataset d'analyses du projet.<br>
+              <span style="color:var(--text3)">Les autres modèles (Qwen 14B, Primus 8B) sont quantifiés ou propriétaires — non entraînables directement.</span>
+            </div>
+          </div>
+
+          <!-- Statut téléchargement Foundation-Sec -->
+          <div id="foundation-sec-status-row" style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--bg3);border:1px solid var(--border);border-radius:6px;margin-bottom:14px">
+            <span id="foundation-sec-icon" style="font-size:18px">⏳</span>
+            <div style="flex:1">
+              <div style="font-size:12px;font-weight:600;color:var(--text)" id="foundation-sec-name">Foundation-Sec-8B Instruct Q4_K_M</div>
+              <div style="font-size:11px;color:var(--text3);margin-top:1px" id="foundation-sec-desc">Vérification présence dans moteur/models/…</div>
+            </div>
+            <button id="btn-download-foundation-sec" class="btn btn-secondary btn-sm" onclick="downloadFoundationSec()" style="display:none">⬇ Télécharger (~4.9 Go)</button>
+            <span id="foundation-sec-badge" style="font-size:10px;padding:2px 7px;border-radius:4px;display:none"></span>
+          </div>
+
+          <!-- Compatibilité fine-tuning des autres modèles -->
+          <details style="margin-bottom:14px">
+            <summary style="font-size:11px;color:var(--text3);cursor:pointer;user-select:none">▶ Pourquoi les autres modèles ne peuvent pas être fine-tunés</summary>
+            <div style="margin-top:8px;display:flex;flex-direction:column;gap:5px;padding-left:8px">
+              <div style="display:flex;align-items:center;gap:8px;font-size:11px;color:var(--text3)">
+                <span>❌</span><span><strong style="color:var(--text2)">Qwen 2.5 14B Q4_K_M</strong> — quantifié 4-bit. Nécessite le modèle FP16 (~29 Go VRAM) via HuggingFace.</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;font-size:11px;color:var(--text3)">
+                <span>❌</span><span><strong style="color:var(--text2)">Primus 8B Q3_K_M</strong> — quantifié 3-bit + modèle propriétaire Trend Micro (poids fusionnés non redistribuables).</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;font-size:11px;color:var(--text3)">
+                <span>⚠️</span><span><strong style="color:var(--text2)">Mistral 7B Q4_K_M</strong> — version instruct quantifiée. Le modèle FP16 base (~14 Go) serait nécessaire.</span>
+              </div>
+            </div>
+          </details>
+
+          <!-- Base de connaissances active -->
+          <div style="padding:8px 12px;background:rgba(16,185,129,.06);border:1px solid rgba(16,185,129,.2);border-radius:6px;margin-bottom:14px">
+            <div style="font-size:11px;color:#4ade80;font-weight:600;margin-bottom:2px">✅ Mémoire IA active — injection de contexte</div>
+            <div style="font-size:11px;color:var(--text3);line-height:1.5">Tous les modèles s'améliorent via l'injection des analyses passées depuis <code>analyses.db</code> dans chaque prompt — sans fine-tuning, sans GPU supplémentaire.</div>
+          </div>
+
+          <!-- Export dataset -->
+          <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em">Export dataset d'entraînement</div>
+          <div style="font-size:11px;color:var(--text3);margin-bottom:10px;line-height:1.6">
+            Génère un <code>.jsonl</code> Alpaca depuis <code>analyses.db</code> — prêt pour fine-tuner <strong>Foundation-Sec-8B</strong> avec <a href="https://github.com/unslothai/unsloth" target="_blank" style="color:var(--accent)">Unsloth QLoRA</a> sur GPU externe (Colab, RunPod) ou localement si VRAM ≥ 16 Go.
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+            <div style="display:flex;align-items:center;gap:8px">
+              <label style="font-size:12px;color:var(--text2)">Score min :</label>
+              <select id="training-min-score" style="font-size:12px;padding:4px 8px;background:var(--bg3);border:1px solid var(--border);border-radius:4px;color:var(--text)">
+                <option value="3">3+ (large)</option>
+                <option value="5" selected>5+ (recommandé)</option>
+                <option value="7">7+ (haute qualité)</option>
+                <option value="9">9-10 (critiques)</option>
+              </select>
+            </div>
+            <button class="btn btn-secondary btn-sm" id="btn-export-dataset" onclick="exportDataset()" data-tip="Exporte analyses.db → .jsonl compatible Unsloth / Foundation-Sec-8B">
+              📦 Exporter dataset (.jsonl)
+            </button>
+            <a href="https://github.com/unslothai/unsloth" target="_blank" class="btn btn-secondary btn-sm">📖 Guide Unsloth</a>
+          </div>
+          <div id="training-status" style="margin-top:8px;font-size:12px;display:none;padding:8px 12px;background:var(--bg3);border-radius:6px;border:1px solid var(--border)"></div>
+        </div>
+
+
 
       <!-- Config JSON viewer -->
       <div class="card" style="margin-top:16px">
@@ -1194,7 +1264,7 @@
 const state = {
   results: [],       // [{...AnalysisResult}] pour affichage frontend
   sessionIds: [],    // [string] IDs de session serveur pour génération PDF complète
-  queue: [],         // [{id, name, status, progress}]
+  queue: [],         // [{id, name, status, progress, aiModel, aiPhase}]
   config: {}
 };
 
@@ -1206,7 +1276,7 @@ function showPage(name) {
   const nav  = document.getElementById('nav-' + name);
   if (page) page.classList.add('active');
   if (nav)  nav.classList.add('active');
-  if (name === 'config') loadConfig();
+  if (name === 'config') { loadConfig(); checkFoundationSecStatus(); }
   if (name === 'dashboard') updateDashboard();
   if (name === 'results') renderResults();
   if (name === 'queue') renderQueue();
@@ -1279,6 +1349,7 @@ async function loadModels(activeModel) {
         cursor: pointer; transition: border-color .15s;
         display: flex; align-items: center; gap: 12px;
       `;
+      card.dataset.modelName = m.display_name;
       card.onmouseover = () => { if (!isActive) card.style.borderColor = 'var(--text3)'; };
       card.onmouseout  = () => { if (!isActive) card.style.borderColor = 'var(--border)'; };
 
@@ -1662,9 +1733,10 @@ async function submitAnalysis() {
       break;
   }
 
-  // Add to queue
-  targets.forEach(t => {
-    state.queue.push({id: null, name: t.name, type: t.type, status: 'pending', progress: 0});
+  // Add to queue — chaque item reçoit un uid stable pour éviter les problèmes d'index
+  targets.forEach((t, i) => {
+    t._uid = 'q-' + Date.now() + '-' + i;
+    state.queue.push({uid: t._uid, id: null, name: t.name, type: t.type, status: 'pending', progress: 0, aiModel: null});
   });
   updateBadges();
   showPage('queue');
@@ -1675,12 +1747,11 @@ async function submitAnalysis() {
   document.getElementById('submit-progress').style.display = 'flex';
 
   // ── ISOLATION : chaque nouveau dépôt repart d'un état vierge ────────────
-  // Les analyses précédentes ne doivent pas contaminer le rapport de ce dépôt.
-  // On réinitialise les résultats, sessions ET la queue avant chaque nouveau lot.
+  // On réinitialise résultats et sessions, MAIS on conserve les items qu'on
+  // vient d'ajouter (pending) — on supprime seulement les done/error anciens.
   state.results    = [];
   state.sessionIds = [];
-  // Vider les items terminés/en erreur de la queue pour éviter les faux matchs
-  state.queue = state.queue.filter(q => q.status === 'running');
+  state.queue = state.queue.filter(q => q.status === 'running' || q.status === 'pending' || q.status === 'ai-report');
 
   // ⚡ Préchauffer le moteur IA immédiatement — en parallèle de l'analyse RF
   fetch('/api/warmup', { method: 'POST' }).catch(() => {});
@@ -1688,7 +1759,8 @@ async function submitAnalysis() {
   let completed = 0;
   for (let i = 0; i < targets.length; i++) {
     const t = targets[i];
-    const qIdx = state.queue.findIndex(q => q.name === t.name && q.status === 'pending');
+    // Recherche par uid stable — insensible aux changements d'index
+    const qIdx = state.queue.findIndex(q => q.uid === t._uid);
     if (qIdx >= 0) state.queue[qIdx].status = 'running';
     renderQueue();
 
@@ -1710,7 +1782,7 @@ async function submitAnalysis() {
       if (result.session_id && !state.sessionIds.includes(result.session_id)) {
         state.sessionIds.unshift(result.session_id);
       }
-      if (qIdx >= 0) { state.queue[qIdx].status = 'done'; state.queue[qIdx].id = result.sample_id; }
+      if (qIdx >= 0) { state.queue[qIdx].status = 'ai-report'; state.queue[qIdx].id = result.sample_id; }
       completed++;
       toast('✓ ' + t.name.split('/').pop() + ' — Score: ' + result.score + '/10',
         result.score >= 7 ? 'error' : result.score >= 4 ? 'info' : 'success');
@@ -1719,8 +1791,24 @@ async function submitAnalysis() {
       // Chaque fichier obtient son propre rapport PDF indépendant.
       // On n'attend pas la fin du lot complet.
       if (result.session_id) {
-        toast(`🤖 Rapport IA en cours pour ${t.name.split('/').pop()}...`, 'info');
-        generatePDFForSession([result.session_id]);
+        // Récupérer le DisplayName du meilleur modèle actif depuis les données déjà chargées
+        let modelLabel = 'Moteur IA';
+        const checkedModel = document.querySelector('input[name="ai-model-choice"]:checked');
+        if (checkedModel) {
+          // Chercher la card parente pour lire le display name
+          const card = checkedModel.closest('[data-model-name]');
+          if (card) modelLabel = card.dataset.modelName;
+          else {
+            const v = checkedModel.value;
+            modelLabel = v.includes('Qwen2.5-14B') ? 'Qwen 2.5 14B'
+                       : v.includes('Primus')      ? 'Primus 8B CTI'
+                       : v.includes('mistral')     ? 'Mistral 7B'
+                       : v.replace(/\.gguf$/i, '').replace(/-/g, ' ');
+          }
+        }
+        if (qIdx >= 0) state.queue[qIdx].aiModel = modelLabel;
+        renderQueue();
+        await generatePDFForSession([result.session_id], t._uid);
       }
 
     } catch(e) {
@@ -1738,11 +1826,12 @@ async function submitAnalysis() {
 
   if (completed > 0) {
     toast(completed + ' analyse(s) terminée(s)', 'success');
-    // Supprimer les items done de la queue après 5s
+    // Supprimer les items done de la queue après 8s
+    // (délai augmenté car la génération IA est awaited — le done arrive après le rapport)
     setTimeout(() => {
       state.queue = state.queue.filter(q => q.status !== 'done');
       renderQueue(); updateBadges();
-    }, 5000);
+    }, 8000);
   }
 
   // ── Fichiers en attente : traiter le prochain lot ─────────────────────
@@ -1865,12 +1954,16 @@ function exportResults() {
 async function generatePDF() {
   if (!state.results.length) { toast('Aucun résultat à exporter', 'error'); return; }
   if (!state.sessionIds.length) { toast('Sessions expirées — relancez une analyse', 'error'); return; }
-  await generatePDFForSession(state.sessionIds.slice());
+  await generatePDFForSession(state.sessionIds.slice(), null);
 }
 
 // generatePDFForSession : génère un rapport PDF pour une liste de session IDs.
 // Appelé après chaque fichier individuel OU manuellement.
-async function generatePDFForSession(sessionIds) {
+// qUid : uid de l'item queue à mettre à jour (null/undefined = appel manuel)
+async function generatePDFForSession(sessionIds, qUid) {
+  // Résoudre l'index à partir de l'uid au moment de l'appel
+  const findQ = () => qUid ? state.queue.findIndex(q => q.uid === qUid) : -1;
+
   try {
     const resp = await fetch('/api/report', {
       method: 'POST',
@@ -1889,13 +1982,21 @@ async function generatePDFForSession(sessionIds) {
       const err = await resp.json().catch(() => ({error: resp.statusText}));
       throw new Error(err.error || resp.statusText);
     }
-    // Le rapport est archivé dans reporting/ côté serveur — pas besoin de télécharger.
-    // On consomme quand même le body pour libérer la connexion.
     await resp.blob();
+    // Mise à jour de la file d'attente → done (résolution uid→index après l'await)
+    const idx = findQ();
+    if (idx >= 0) {
+      state.queue[idx].status = 'done';
+      renderQueue(); updateBadges();
+    }
     toast('✅ Rapport IA généré — disponible dans l\'onglet Rapports IA', 'success');
-    showPage('reporting');
     loadReportingList();
   } catch(e) {
+    const idx = findQ();
+    if (idx >= 0) {
+      state.queue[idx].status = 'error';
+      renderQueue(); updateBadges();
+    }
     toast('Erreur PDF : ' + e.message, 'error');
   }
 }
@@ -2007,24 +2108,77 @@ function closeDetail() {
 function renderQueue() {
   const list = document.getElementById('queue-list');
   const empty = document.getElementById('queue-empty');
-  const active = state.queue.filter(q => q.status !== 'done');
   if (!state.queue.length) {
     empty.style.display = 'block';
     list.innerHTML = '';
     return;
   }
   empty.style.display = 'none';
-  list.innerHTML = state.queue.map(q => `
-    <div class="queue-item">
-      <div class="queue-name">${escHtml(q.name)}</div>
-      <div class="queue-status">
-        ${q.status === 'running' ? '<div class="spinner"></div>' : ''}
-        ${q.status === 'pending' ? '⏳' : ''}
-        ${q.status === 'done' ? '✅' : ''}
-        ${q.status === 'error' ? '❌' : ''}
-        ${q.status}
+
+  // ── Définition des phases et leurs styles ────────────────────────────────
+  const phases = {
+    pending:    { icon: '⏳', label: 'En attente',             color: 'var(--text3)',  border: 'var(--border)',              bg: 'var(--bg3)' },
+    running:    { icon: '🔬', label: 'Analyse sandbox RF…',    color: '#60a5fa',       border: 'rgba(96,165,250,.35)',        bg: 'rgba(96,165,250,.04)' },
+    'ai-report':{ icon: '🤖', label: 'Génération rapport IA…', color: '#f59e0b',       border: 'rgba(245,158,11,.4)',         bg: 'rgba(245,158,11,.04)' },
+    done:       { icon: '✅', label: 'Terminé',                 color: 'var(--green)',  border: 'rgba(16,185,129,.25)',        bg: 'var(--bg3)' },
+    error:      { icon: '❌', label: 'Erreur',                  color: 'var(--red)',    border: 'rgba(220,38,38,.3)',          bg: 'rgba(220,38,38,.03)' },
+  };
+
+  list.innerHTML = state.queue.map(q => {
+    const p = phases[q.status] || phases.pending;
+    const isActive = q.status === 'running' || q.status === 'ai-report';
+
+    // Badge moteur IA — affiché uniquement pendant la phase rapport IA
+    const engineBadge = (q.status === 'ai-report' && q.aiModel)
+      ? `<span style="
+            display:inline-flex;align-items:center;gap:4px;
+            font-size:10px;font-family:var(--mono);
+            background:rgba(245,158,11,.15);
+            border:1px solid rgba(245,158,11,.3);
+            color:#f59e0b;
+            border-radius:4px;padding:1px 6px;margin-left:6px;
+            white-space:nowrap;">▶ ${escHtml(q.aiModel)}</span>`
+      : '';
+
+    // Barre de progression animée pour les phases actives
+    const progressBar = isActive
+      ? `<div style="margin-top:7px;height:3px;border-radius:2px;background:var(--border);overflow:hidden;">
+           <div style="height:100%;border-radius:2px;background:${p.color};
+                       width:100%;animation:indeterminate 1.6s ease-in-out infinite;
+                       transform-origin:left;"></div>
+         </div>`
+      : '';
+
+    return `
+    <div style="
+      display:flex;flex-direction:column;
+      padding:10px 14px;border-radius:8px;
+      border:1px solid ${p.border};margin-bottom:6px;
+      background:${p.bg};transition:border-color .2s,background .2s;">
+      <div style="display:flex;align-items:center;gap:10px;">
+        <div style="width:18px;text-align:center;flex-shrink:0;">
+          ${isActive ? '<div class="spinner"></div>' : p.icon}
+        </div>
+        <div class="queue-name" style="flex:1;">${escHtml(q.name)}</div>
+        <div style="display:flex;align-items:center;font-size:11px;color:${p.color};flex-shrink:0;gap:4px;">
+          <span>${p.label}</span>${engineBadge}
+        </div>
       </div>
-    </div>`).join('');
+      ${progressBar}
+    </div>`;
+  }).join('');
+}
+
+// Animation indeterminate pour les barres de progression
+if (!document.getElementById('style-indeterminate')) {
+  const s = document.createElement('style');
+  s.id = 'style-indeterminate';
+  s.textContent = `@keyframes indeterminate {
+    0%   { transform: translateX(-100%) scaleX(.3); }
+    50%  { transform: translateX(0%)    scaleX(.6); }
+    100% { transform: translateX(100%)  scaleX(.3); }
+  }`;
+  document.head.appendChild(s);
 }
 
 // ─── DASHBOARD ────────────────────────────────────────────────────────────────
@@ -2079,7 +2233,8 @@ function updateBadges() {
   } else {
     rb.style.display = 'none';
   }
-  const active = state.queue.filter(q => q.status === 'running' || q.status === 'pending').length;
+  // ai-report est une phase active — doit être comptée dans le badge
+  const active = state.queue.filter(q => q.status === 'running' || q.status === 'pending' || q.status === 'ai-report').length;
   if (active) {
     qb.style.display = '';
     qb.textContent = active;
@@ -2190,25 +2345,15 @@ function initLogStream() {
       badge.style.display = '';
     }
 
-    // Réactivation automatique du bouton entraînement quand trainer.exe se termine
-    const btn = document.getElementById('btn-launch-training');
+    // Notification export dataset terminé
     const trainingStatus = document.getElementById('training-status');
-    if (btn && btn.disabled) {
-      if (/\[TRAINING\].*✓.*terminé/i.test(msg)) {
-        btn.disabled = false;
-        btn.textContent = '🧠 Entraîner les IA';
-        if (trainingStatus) {
-          trainingStatus.style.color = 'var(--ok, #4caf50)';
-          trainingStatus.textContent = '✓ Entraînement terminé — copiez le .gguf dans moteur/models/';
-        }
-        toast('✓ Fine-tuning terminé ! Modèle prêt dans moteur/lora/', 'success');
+    if (trainingStatus && trainingStatus.style.display !== 'none') {
+      if (/\[TRAINING\].*✓/i.test(msg)) {
+        trainingStatus.style.borderColor = 'rgba(16,185,129,.3)';
+        trainingStatus.style.color = '#4ade80';
       } else if (/\[TRAINING\].*✗/i.test(msg)) {
-        btn.disabled = false;
-        btn.textContent = '🧠 Entraîner les IA';
-        if (trainingStatus) {
-          trainingStatus.style.color = 'var(--err, #f44336)';
-          trainingStatus.textContent = '✗ ' + msg.replace(/^\[TRAINING\]\s*/i, '');
-        }
+        trainingStatus.style.borderColor = 'rgba(220,38,38,.3)';
+        trainingStatus.style.color = '#f87171';
       }
     }
   };
@@ -2401,61 +2546,123 @@ async function loadKnowledgeStats() {
   }
 }
 
-async function launchTraining() {
-  const btn = document.getElementById('btn-launch-training');
+async function exportDataset() {
+  const btn = document.getElementById('btn-export-dataset');
   const status = document.getElementById('training-status');
   if (btn.disabled) return;
 
   btn.disabled = true;
+  btn.textContent = '⏳ Export en cours…';
   status.style.display = '';
-
-  // Ouvrir la loupe immédiatement pour voir les logs en temps réel
-  const floater = document.getElementById('log-floater');
-  if (floater && !logFloaterVisible) toggleLogFloater();
-
-  const setStatus = (msg, color) => {
-    status.style.color = color || 'var(--text3)';
-    status.textContent = msg;
-  };
+  status.style.color = 'var(--text2)';
+  status.style.borderColor = 'var(--border)';
+  status.textContent = 'Export du dataset depuis analyses.db…';
 
   try {
-    // Étape 1 — Export du dataset depuis analyses.db
-    btn.textContent = '⏳ 1/3 Export dataset…';
-    setStatus('Étape 1/3 — Export du dataset depuis la base d\'analyses…');
-    const expR = await fetch('/api/training/export', {
+    const minScore = parseInt(document.getElementById('training-min-score')?.value || '5');
+    const r = await fetch('/api/training/export', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ min_score: 5 })
+      body: JSON.stringify({ min_score: minScore })
     });
-    const expRes = await expR.json();
-    if (!expR.ok) throw new Error(expRes.error || expR.statusText);
-    if (expRes.exported === 0) throw new Error(
-      'Base de connaissances vide — analysez d\'abord des fichiers malveillants'
-    );
-    setStatus(`✓ ${expRes.exported} exemples exportés — Étape 2/3 : vérification Python/Unsloth…`);
+    const res = await r.json();
+    if (!r.ok) throw new Error(res.error || r.statusText);
 
-    // Étape 2+3 — trainer.exe vérifie Python, installe Unsloth si absent, entraîne
-    btn.textContent = '⏳ 2/3 Vérif. Python…';
-    // Le handler /api/training/start enchaîne : checkPython → installUnsloth si absent → train
-    const trainR = await fetch('/api/training/start', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ epochs: 3, min_score: 5, dry_run: false })
-    });
-    const trainRes = await trainR.json();
-    if (!trainR.ok) throw new Error(trainRes.error || trainR.statusText);
+    if (res.exported === 0) {
+      status.style.color = '#f59e0b';
+      status.style.borderColor = 'rgba(245,158,11,.3)';
+      status.innerHTML = '⚠ Base vide — aucune analyse avec score ≥ ' + minScore + ' trouvée.<br>'
+        + '<span style="color:var(--text3)">Analysez d\'abord des fichiers malveillants pour alimenter la base.</span>';
+      toast('Base vide — analysez d\'abord des fichiers', 'info');
+      return;
+    }
 
-    btn.textContent = '⏳ 3/3 Entraînement…';
-    setStatus('Étape 3/3 — Fine-tuning LoRA en cours — logs dans la loupe 🔍 (15 min à 2h selon GPU)');
+    status.style.color = '#4ade80';
+    status.style.borderColor = 'rgba(16,185,129,.3)';
+    status.innerHTML = `✅ <strong>${res.exported} exemple(s)</strong> exporté(s) (${res.skipped} ignoré(s)) en ${res.duration}<br>`
+      + `<span style="color:var(--text3);font-family:var(--mono);font-size:11px">📁 ${res.path}</span><br>`
+      + `<span style="color:var(--text3);margin-top:4px;display:block">→ Utilisez ce fichier avec <a href="https://github.com/unslothai/unsloth" target="_blank" style="color:var(--accent)">Unsloth</a> ou Axolotl pour fine-tuner Mistral 7B sur un serveur GPU externe.</span>`;
+    toast(`✅ Dataset exporté — ${res.exported} exemple(s) dans knowledge/`, 'success');
 
   } catch(e) {
-    setStatus('✗ ' + e.message, 'var(--err, #f44336)');
-    toast('Erreur entraînement : ' + e.message, 'error');
+    status.style.color = '#f87171';
+    status.style.borderColor = 'rgba(220,38,38,.3)';
+    status.textContent = '✗ ' + e.message;
+    toast('Erreur export : ' + e.message, 'error');
+  } finally {
     btn.disabled = false;
-    btn.textContent = '🧠 Entraîner les IA';
+    btn.textContent = '📦 Exporter dataset (.jsonl)';
   }
-  // Note : le bouton reste disabled pendant l'entraînement (tâche de fond)
-  // Il se réactivera via un event SSE quand trainer.exe aura terminé
+}
+
+// Conserver launchTraining comme alias vide pour éviter les erreurs si référencé ailleurs
+function launchTraining() { exportDataset(); }
+
+// ─── FOUNDATION-SEC-8B : vérification présence + téléchargement ───────────────
+async function checkFoundationSecStatus() {
+  try {
+    const r = await fetch('/api/models');
+    const data = await r.json();
+    const models = data.models || [];
+    const fsModel = models.find(m => m.filename && m.filename.toLowerCase().includes('foundation-sec'));
+    
+    const icon   = document.getElementById('foundation-sec-icon');
+    const desc   = document.getElementById('foundation-sec-desc');
+    const btn    = document.getElementById('btn-download-foundation-sec');
+    const badge  = document.getElementById('foundation-sec-badge');
+    if (!icon) return;
+
+    if (fsModel && fsModel.present) {
+      icon.textContent = '✅';
+      desc.textContent = `Présent dans moteur/models/ — ${fsModel.size_gb ? fsModel.size_gb.toFixed(1) + ' Go' : '~4.9 Go'}`;
+      badge.style.display = '';
+      badge.style.background = 'rgba(16,185,129,.15)';
+      badge.style.color = '#4ade80';
+      badge.textContent = '✓ Prêt';
+      btn.style.display = 'none';
+    } else {
+      icon.textContent = '⬇';
+      desc.textContent = 'Non téléchargé — cliquez pour l\'ajouter au catalogue de modèles (~4.9 Go, Apache 2.0)';
+      badge.style.display = '';
+      badge.style.background = 'rgba(245,158,11,.15)';
+      badge.style.color = '#fbbf24';
+      badge.textContent = 'Non présent';
+      btn.style.display = '';
+    }
+  } catch(e) {
+    const desc = document.getElementById('foundation-sec-desc');
+    if (desc) desc.textContent = 'Impossible de vérifier le statut — ' + e.message;
+  }
+}
+
+async function downloadFoundationSec() {
+  const btn = document.getElementById('btn-download-foundation-sec');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Lancement…'; }
+  try {
+    const r = await fetch('/api/models/download', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ filename: 'Foundation-Sec-8B-Instruct-Q4_K_M.gguf' })
+    });
+    const res = await r.json();
+    if (!r.ok) throw new Error(res.error || r.statusText);
+    toast('⬇ Téléchargement Foundation-Sec-8B démarré — suivez dans les logs 🔍', 'info');
+    if (btn) { btn.textContent = '⏳ Téléchargement…'; }
+    // Vérifier toutes les 30s si le modèle est arrivé
+    const check = setInterval(async () => {
+      const rr = await fetch('/api/models');
+      const dd = await rr.json();
+      const found = (dd.models || []).find(m => m.filename?.includes('Foundation-Sec') && m.present);
+      if (found) {
+        clearInterval(check);
+        checkFoundationSecStatus();
+        toast('✅ Foundation-Sec-8B téléchargé et prêt !', 'success');
+      }
+    }, 30000);
+  } catch(e) {
+    toast('Erreur téléchargement : ' + e.message, 'error');
+    if (btn) { btn.disabled = false; btn.textContent = '⬇ Télécharger (~4.9 Go)'; }
+  }
 }
 
 
