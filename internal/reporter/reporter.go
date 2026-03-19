@@ -31,10 +31,10 @@ func toL1(s string) string {
 			buf = append(buf, '"')
 		case r == '\u2022': // bullet •  → *
 			buf = append(buf, '*')
-		case r == '\u25CF': // ● (BLACK CIRCLE) → o
-			buf = append(buf, 'o')
-		case r == '\u25B6': // ▶ (BLACK RIGHT-POINTING TRIANGLE) → >
-			buf = append(buf, '>')
+		case r == '\u25CF': // ● (BLACK CIRCLE) → (*)
+			buf = append(buf, '(', '*', ')')
+		case r == '\u25B6': // ▶ (BLACK RIGHT-POINTING TRIANGLE) → >>
+			buf = append(buf, '>', '>')
 		case r == '\u2026': // ellipsis → ...
 			buf = append(buf, '.', '.', '.')
 		case r == '\u2192': // → arrow
@@ -43,6 +43,14 @@ func toL1(s string) string {
 			buf = append(buf, '<', '=')
 		case r == '\u2265': // ≥
 			buf = append(buf, '>', '=')
+		case r == '\u26A0': // ⚠ WARNING SIGN → [!]
+			buf = append(buf, '[', '!', ']')
+		case r == '\u2713' || r == '\u2714': // ✓ CHECK MARK → [v]
+			buf = append(buf, '[', 'v', ']')
+		case r == '\u2717' || r == '\u2718': // ✗ CROSS → [x]
+			buf = append(buf, '[', 'x', ']')
+		case r == '\u00B7' || r == '\u2022' || r == '\u2023': // middle dots → -
+			buf = append(buf, '-')
 		default:
 			buf = append(buf, '?')
 		}
@@ -296,15 +304,28 @@ func (g *Generator) table(headers []string, rows [][]string, colWidths []float64
 		}
 
 		rowY := pdf.GetY()
+		lineH := 4.2 // hauteur d'une ligne de texte
 
+		// Pré-remplir le fond de toute la ligne (fond uniforme avant dessin)
+		// Calculer la largeur totale
+		totalW := 0.0
+		for ci, _ := range row {
+			if ci < len(colWidths) {
+				totalW += colWidths[ci]
+			}
+		}
 		if ri%2 == 0 {
 			g.fillColor(colWhite)
+			pdf.Rect(g.marginL, rowY, totalW, cellH, "F")
 		} else {
 			g.fillColor(colLight)
+			pdf.Rect(g.marginL, rowY, totalW, cellH, "F")
 		}
 		g.setColor(color{28, 28, 28})
 
-		// Dessiner chaque cellule de la ligne à la même hauteur
+		// CORRECTION BUG4: dessiner chaque cellule en forçant SetXY(curX, rowY)
+		// avant chaque cellule. Ne JAMAIS appeler MultiCell qui déplace Y.
+		// Pour les cellules multi-lignes, on dessine le texte ligne par ligne.
 		curX := g.marginL
 		for i, cell := range row {
 			if i >= len(colWidths) {
@@ -314,35 +335,40 @@ func (g *Generator) table(headers []string, rows [][]string, colWidths []float64
 			if w <= 0 {
 				w = 10
 			}
-			fill := ri%2 != 0
-			// Utiliser CellFormat pour les cellules simples, MultiCell sinon
-			lineCount := 1
-			if w > 2 && cell != "" {
-				lines := pdf.SplitLines([]byte(toL1(cell)), w-2)
-				lineCount = len(lines)
+			cellText := toL1(cell)
+
+			// Toujours repositionner au début de la ligne courante
+			pdf.SetXY(curX, rowY)
+
+			// Calculer le nombre de lignes nécessaires pour cette cellule
+			var splitLines [][]byte
+			if w > 2 && cellText != "" {
+				splitLines = pdf.SplitLines([]byte(cellText), w-2)
 			}
-			if lineCount <= 1 {
-				pdf.SetXY(curX, rowY)
-				pdf.CellFormat(w, cellH, toL1(cell), "1", 0, "L", fill, 0, "")
+
+			if len(splitLines) <= 1 {
+				// Cellule mono-ligne: CellFormat simple, hauteur = cellH total
+				pdf.CellFormat(w, cellH, cellText, "1", 0, "L", false, 0, "")
 			} else {
-				// MultiCell pour les cellules multi-lignes
-				// On doit simuler la hauteur fixe avec MultiCell
-				pdf.SetXY(curX, rowY)
-				lineH := cellH / float64(maxLines)
-				pdf.MultiCell(w, lineH, toL1(cell), "1", "L", fill)
-				// Compléter avec des cellules vides si besoin
-				linesDrawn := pdf.SplitLines([]byte(toL1(cell)), w-2)
-				if len(linesDrawn) < maxLines {
-					remaining := maxLines - len(linesDrawn)
-					for k := 0; k < remaining; k++ {
-						pdf.SetXY(curX, rowY+float64(len(linesDrawn)+k)*lineH)
-						pdf.CellFormat(w, lineH, "", "LR", 0, "L", fill, 0, "")
+				// Cellule multi-lignes: dessiner manuellement ligne par ligne
+				// sans jamais laisser le curseur Y avancer automatiquement
+				// 1. Dessiner le rectangle de bordure englobant
+				g.drawColor(color{180, 185, 190})
+				pdf.Rect(curX, rowY, w, cellH, "D")
+				g.drawColor(color{0, 0, 0})
+				// 2. Dessiner chaque ligne de texte à sa position Y exacte
+				for li, lineBytes := range splitLines {
+					if li >= maxLines {
+						break
 					}
+					textY := rowY + float64(li)*lineH + 1.0
+					pdf.SetXY(curX+1, textY)
+					pdf.CellFormat(w-2, lineH, string(lineBytes), "", 0, "L", false, 0, "")
 				}
 			}
 			curX += w
 		}
-		// Ligne de fermeture en bas
+		// Repositionner Y APRÈS toute la ligne (pas avant, pas entre cellules)
 		pdf.SetXY(g.marginL, rowY+cellH)
 	}
 	g.setColor(color{0, 0, 0})
@@ -409,7 +435,7 @@ func (g *Generator) coverPage(results []*models.AnalysisResult) {
 	pdf.SetXY(g.marginL+8, 35)
 	g.setFont("Helvetica", "", 9)
 	g.setColor(color{140, 153, 170})
-	pdf.CellFormat(100, 5, toL1("● RECORDED FUTURE"), "", 1, "L", false, 0, "")
+	pdf.CellFormat(100, 5, "[*] RECORDED FUTURE", "", 1, "L", false, 0, "")
 
 	pdf.SetXY(g.marginL+8, 42)
 	g.setFont("Helvetica", "B", 28)
@@ -446,18 +472,20 @@ func (g *Generator) coverPage(results []*models.AnalysisResult) {
 		{fmt.Sprintf("%d", totalIPs), "IPs uniques"},
 	}
 
+	// BUG5 fix: largeur dynamique pour que les 4 KPIs tiennent tous
+	kpiW := (g.contentW - 8) / float64(len(kpis))
 	pdf.SetXY(g.marginL+8, 75)
 	for _, kpi := range kpis {
 		g.setFont("Helvetica", "B", 20)
 		g.setColor(colAccent)
-		pdf.CellFormat(40, 9, toL1(kpi.val), "", 0, "L", false, 0, "")
+		pdf.CellFormat(kpiW, 9, toL1(kpi.val), "", 0, "L", false, 0, "")
 	}
 	pdf.Ln(10)
 	pdf.SetX(g.marginL + 8)
 	for _, kpi := range kpis {
 		g.setFont("Helvetica", "", 8)
 		g.setColor(color{140, 153, 170})
-		pdf.CellFormat(40, 5, toL1(kpi.label), "", 0, "L", false, 0, "")
+		pdf.CellFormat(kpiW, 5, toL1(kpi.label), "", 0, "L", false, 0, "")
 	}
 
 	// Métadonnées
@@ -971,18 +999,28 @@ func (g *Generator) staticAnalysisSection(results []*models.AnalysisResult) {
 					selected = "OUI"
 				}
 				tags := strings.Join(f.Tags, " ")
+				// BUG6 fix: supprimer col Type vide, tronquer SHA256
+				sha256Display := f.SHA256
+				if len(sha256Display) > 40 {
+					sha256Display = sha256Display[:40] + "..."
+				}
+				// Truncate du nom par la droite (garder début du chemin)
+				name := f.Name
+				if len(name) > 45 {
+					name = name[:44] + "..."
+				}
 				fileRows = append(fileRows, []string{
-					truncate(f.Name, 40),
-					f.Filetype,
+					name,
 					fmt.Sprintf("%d o", f.Size),
-					f.SHA256,
+					sha256Display,
 					selected,
 					tags,
 				})
 			}
 			g.table(
-				[]string{"Fichier", "Type", "Taille", "SHA256", "Sélect.", "Tags"},
-				fileRows, []float64{52, 28, 16, 50, 14, 20}, colBlue,
+				// BUG6b: sans col Type, SHA256=72mm, total=180mm
+				[]string{"Fichier", "Taille", "SHA256 (tronqué)", "Sel.", "Tags"},
+				fileRows, []float64{52, 18, 72, 14, 24}, colBlue,
 			)
 		}
 	}
@@ -1639,10 +1677,15 @@ func (g *Generator) recommendationsSection(results []*models.AnalysisResult) {
 	}
 
 	recs := []rec{}
-	if maxScore >= 7 {
-		recs = append(recs, rec{"CRITIQUE — BLOCAGE IMMÉDIAT", colRed,
+	// BUG8 fix: recommandation CRITIQUE toujours présente (isolation)
+	recs = append(recs, rec{"CRITIQUE — ISOLATION", colRed,
+		"Isoler immédiatement tout système ayant exécuté ce fichier. " +
+			"Déconnecter du réseau (câble ou VLAN quarantaine). " +
+			"Ne pas éteindre la machine (perte de preuves RAM)."})
+	if maxScore >= 4 {
+		recs = append(recs, rec{"CRITIQUE — BLOCAGE IOCs", colRed,
 			"Bloquer immédiatement les IOCs identifiés sur tous les équipements réseau " +
-				"(pare-feu, proxy, DNS sinkhole). Isoler tout système ayant exécuté ces fichiers."})
+				"(pare-feu, proxy, EDR, DNS sinkhole). Forcer une analyse complète de l'infra."})
 	}
 	if len(allIPs) > 0 {
 		recs = append(recs, rec{"ÉLEVÉ — BLOCAGE IP", colAccent,
@@ -1675,18 +1718,19 @@ func (g *Generator) recommendationsSection(results []*models.AnalysisResult) {
 		yPos := g.pdf.GetY()
 		// Colonne priorité
 		g.fillColor(r.bg)
-		g.pdf.Rect(g.marginL, yPos, 38, 14, "F")
+		// BUG9 fix: label 50mm (était 38mm) pour éviter le wrapping
+		g.pdf.Rect(g.marginL, yPos, 50, 14, "F")
 		g.setFont("Helvetica", "B", 7)
 		g.setColor(colWhite)
 		g.pdf.SetXY(g.marginL+1, yPos+1)
-		g.pdf.MultiCell(36, 3.5, toL1(r.priority), "", "C", false)
+		g.pdf.MultiCell(48, 3.5, toL1(r.priority), "", "C", false)
 		// Colonne texte
 		g.fillColor(colLight)
-		g.pdf.Rect(g.marginL+38, yPos, g.contentW-38, 14, "F")
+		g.pdf.Rect(g.marginL+50, yPos, g.contentW-50, 14, "F")
 		g.setFont("Helvetica", "", 8)
 		g.setColor(color{28, 28, 28})
-		g.pdf.SetXY(g.marginL+40, yPos+1)
-		g.pdf.MultiCell(g.contentW-42, 3.8, toL1(r.text), "", "L", false)
+		g.pdf.SetXY(g.marginL+52, yPos+1)
+		g.pdf.MultiCell(g.contentW-54, 3.8, toL1(r.text), "", "L", false)
 		g.pdf.SetY(yPos + 15)
 		g.pdf.Ln(1)
 	}
@@ -1767,14 +1811,29 @@ func (g *Generator) attackTimelineSection(results []*models.AnalysisResult) {
 		}
 		phases = append(phases, phase{2, "Établissement de la persistance", persistDetail, statusPersist, colPersist})
 
-		// Phase 3 — C2 (depuis les IPs)
-		if len(r.IOCs.IPs) > 0 {
-			ips := r.IOCs.IPs
-			if len(ips) > 3 {
-				ips = ips[:3]
+		// BUG7 fix: Phase 3 toujours présente, statut adaptatif
+		{
+			var detail3 string
+			var status3 string
+			var col3 color
+			if len(r.IOCs.IPs) > 0 {
+				ips3 := r.IOCs.IPs
+				if len(ips3) > 3 {
+					ips3 = ips3[:3]
+				}
+				detail3 = fmt.Sprintf("Connexion chiffrée vers l'infrastructure C2 : %s.", strings.Join(ips3, ", "))
+				status3 = "DÉTECTÉ"
+				col3 = colAccent
+			} else if len(r.IOCs.Domains) > 0 {
+				detail3 = fmt.Sprintf("Contact DNS suspects vers : %s.", strings.Join(r.IOCs.Domains[:intMin(2, len(r.IOCs.Domains))], ", "))
+				status3 = "DÉTECTÉ"
+				col3 = colAccent
+			} else {
+				detail3 = "Aucune communication C2 confirmée lors de l'analyse sandbox."
+				status3 = "NON DÉTECTÉ"
+				col3 = colGrey
 			}
-			detail := fmt.Sprintf("Connexion chiffrée vers l'infrastructure C2 : %s.", strings.Join(ips, ", "))
-			phases = append(phases, phase{3, "Communication C2", detail, "DÉTECTÉ", colAccent})
+			phases = append(phases, phase{3, "Communication C2", detail3, status3, col3})
 		}
 
 		// Phase 4 — Latéralisation (chercher dans signatures)
@@ -2084,6 +2143,14 @@ func (g *Generator) incidentResponseSection(results []*models.AnalysisResult) {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
+
+// intMin retourne le minimum de deux entiers
+func intMin(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
 
 func truncate(s string, n int) string {
 	if len(s) <= n {
