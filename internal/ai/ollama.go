@@ -32,6 +32,7 @@ const (
 	FallbackModel      = "Qwen2.5-14B-Instruct-Q4_K_M.gguf"       // moteur secondaire — meilleure gestion JSON structuré
 	PrimusModel        = "Llama-Primus-8B-Q3_K_M.gguf"            // Trend Micro Primus 8B — spécialisé cybersécurité/CTI
 	FoundationSecModel = "Foundation-Sec-8B-Instruct-Q4_K_M.gguf" // Cisco Foundation-Sec-8B — cybersécurité, fine-tunable
+	GraniteCodeModel   = "granite-8b-code-instruct-Q4_K_M.gguf"   // IBM Granite 8B Code — analyse de code malveillant statique
 	startupTimeout     = 120 * time.Second
 	httpTimeout        = 10 * time.Second // pour health checks uniquement
 	genTimeout         = 0                // sans limite pour la génération IA (prompt ~20k tokens)
@@ -65,6 +66,12 @@ const (
 	// Seul modèle du projet entraînable localement via Unsloth QLoRA sur le dataset analyses.db
 	// Source : fdtn-ai/Foundation-Sec-8B-Instruct + mradermacher/Foundation-Sec-8B-Instruct-GGUF
 	foundationSecGGUFURL = "https://huggingface.co/mradermacher/Foundation-Sec-8B-Instruct-GGUF/resolve/main/Foundation-Sec-8B-Instruct.Q4_K_M.gguf"
+
+	// IBM Granite 8B Code Instruct Q4_K_M — IBM Research (Apache 2.0)
+	// Spécialisé analyse de code — excellent pour décompilation, détection patterns malveillants,
+	// analyse de scripts obfusqués (PowerShell, JavaScript, VBA). Complémentaire à Foundation-Sec.
+	// Source : ibm-granite/granite-8b-code-instruct-4k + bartowski/granite-8b-code-instruct-4k-GGUF
+	graniteCodeGGUFURL = "https://huggingface.co/bartowski/granite-8b-code-instruct-4k-GGUF/resolve/main/granite-8b-code-instruct-4k-Q4_K_M.gguf"
 )
 
 // ─── Catalogue des modèles connus ────────────────────────────────────────────
@@ -129,6 +136,17 @@ var KnownModels = map[string]ModelInfo{
 		DownloadURL: foundationSecGGUFURL,
 		SourceURL:   "https://huggingface.co/fdtn-ai/Foundation-Sec-8B-Instruct",
 		Specialty:   "cyber",
+		Gated:       false,
+	},
+	GraniteCodeModel: {
+		Filename:    GraniteCodeModel,
+		DisplayName: "IBM Granite 8B Code Instruct",
+		Description: "IBM Research — spécialisé analyse de code : décompilation, scripts obfusqués (PowerShell, JS, VBA), détection de patterns malveillants dans le code source. Complémentaire à Foundation-Sec pour l'étape d'extraction technique. Apache 2.0.",
+		VRAMMinGB:   6,
+		SizeGB:      4.9,
+		DownloadURL: graniteCodeGGUFURL,
+		SourceURL:   "https://huggingface.co/ibm-granite/granite-8b-code-instruct-4k",
+		Specialty:   "code-analysis",
 		Gated:       false,
 	},
 }
@@ -1603,10 +1621,12 @@ func formatBytes(b int64) string {
 //	Primus 8B (cyber Trend Micro) > Mistral 7B (généraliste)
 func SelectBestModel() string {
 	mDir := moteurDir()
-	// Ordre de priorité explicite — le premier présent sur disque gagne
+	// Ordre de priorité explicite — le premier présent sur disque gagne.
+	// Note: GraniteCodeModel exclu ici — il est utilisé en M1 du pipeline chaîné,
+	// pas comme modèle de génération de rapport complet (trop spécialisé code seul).
 	priority := []string{
-		FoundationSecModel, // Cisco cyber LLM, fin-tunable — priorité max si présent
-		FallbackModel,      // Qwen 14B — plus grand, meilleur JSON
+		FoundationSecModel, // Cisco cyber LLM, fine-tunable — priorité max si présent
+		FallbackModel,      // Qwen 14B — plus grand, meilleur JSON structuré
 		PrimusModel,        // Trend Micro cyber
 		DefaultModel,       // Mistral 7B — fallback généraliste
 	}
@@ -1634,4 +1654,80 @@ func FoundationSecModelPresent() bool {
 // ou reposent sur des architectures propriétaires non redistribuables en FP16.
 func IsFineTunable(filename string) bool {
 	return filename == FoundationSecModel
+}
+
+// ─── Pipeline bi-modèle en chaîne ────────────────────────────────────────────
+//
+// Architecture : M1 (cyber spécialiste) → M2 (généraliste structuré)
+//
+//   M1 rôle : extraction technique pure (famille, TTPs, C2, IOCs)
+//             → prompt court (~6k), réponse JSON partiel rapide
+//   M2 rôle : synthèse narrative + JSON final structuré (résumé exécutif, recs COMEX)
+//             → reçoit le résultat M1 + schéma complet
+//
+// Pertinence : les modèles cyber spécialisés (Foundation-Sec, Primus) sont précis
+// techniquement mais produisent souvent un JSON malformé ou un style trop technique
+// pour le management. Qwen 14B excelle sur la structure JSON et la prose managériale
+// mais manque de précision sur l'identification des TTPs et familles malware.
+// La chaîne tire profit des deux forces.
+
+// SelectChainModels retourne (M1, M2) pour le pipeline bi-modèle.
+// M1 = meilleur spécialiste cyber disponible (extraction technique)
+// M2 = meilleur généraliste structuré disponible (synthèse rapport)
+// Retourne ("", "") si pas assez de modèles distincts pour une chaîne.
+func SelectChainModels() (m1, m2 string) {
+	mDir := moteurDir()
+
+	// M1 : priorité aux spécialistes cyber
+	cyberModels := []string{FoundationSecModel, PrimusModel, GraniteCodeModel}
+	for _, m := range cyberModels {
+		if modelPresent(mDir, m) {
+			m1 = m
+			break
+		}
+	}
+
+	// M2 : meilleur généraliste structuré, différent de M1
+	generalistModels := []string{FallbackModel, DefaultModel}
+	for _, m := range generalistModels {
+		if modelPresent(mDir, m) && m != m1 {
+			m2 = m
+			break
+		}
+	}
+
+	// Si M1 et M2 sont identiques ou l'un est absent → pas de chaîne possible
+	if m1 == "" || m2 == "" || m1 == m2 {
+		return "", ""
+	}
+	return m1, m2
+}
+
+// ChainAvailable indique si au moins 2 modèles distincts sont présents pour une chaîne.
+func ChainAvailable() bool {
+	m1, m2 := SelectChainModels()
+	return m1 != "" && m2 != ""
+}
+
+// GraniteCodeModelPresent indique si IBM Granite 8B Code est disponible.
+func GraniteCodeModelPresent() bool {
+	return modelPresent(moteurDir(), GraniteCodeModel)
+}
+
+// EnsureGraniteCodeModel télécharge IBM Granite 8B Code Instruct.
+func EnsureGraniteCodeModel(progressFn func(string)) {
+	mDir := moteurDir()
+	if modelPresent(mDir, GraniteCodeModel) {
+		progressFn(logOK("AI-GRANITE", "IBM Granite 8B Code déjà présent"))
+		return
+	}
+	progressFn(logInfo("AI-GRANITE", "Téléchargement IBM Granite 8B Code Instruct Q4_K_M (~4.9 Go)..."))
+	progressFn(logInfo("AI-GRANITE", "Source : bartowski/granite-8b-code-instruct-4k-GGUF (IBM Research, Apache 2.0)"))
+	dest := modelPath(mDir, GraniteCodeModel)
+	if err := downloadResumable(graniteCodeGGUFURL, dest, progressFn); err != nil {
+		progressFn(logErr("AI-GRANITE", fmt.Sprintf("Téléchargement Granite échoué: %v", err)))
+		return
+	}
+	progressFn(logOK("AI-GRANITE", fmt.Sprintf("Granite 8B Code téléchargé → moteur/models/%s", GraniteCodeModel)))
+	progressFn(logOK("AI-GRANITE", "Rôle : extraction technique M1 dans le pipeline bi-modèle"))
 }

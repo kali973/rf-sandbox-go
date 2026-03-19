@@ -37,6 +37,9 @@ type KnowledgeEntry struct {
 	ResumeExecutif  string
 	Recommandations []string
 	NiveauConfiance string
+	// Enrichissement stocké pour le dataset d'entraînement
+	MitreDetails map[string]MitreTechniqueDetail // TTP ID → détails MITRE enrichis
+	AbuseScores  map[string]IPReputation         // IP → réputation AbuseIPDB
 }
 
 type SimilarEntry struct {
@@ -89,14 +92,31 @@ func openDB() (*sql.DB, error) {
 			hashes          TEXT,
 			resume          TEXT,
 			recommandations TEXT,
-			confiance       TEXT
+			confiance       TEXT,
+			mitre_details   TEXT DEFAULT '{}',
+			abuse_scores    TEXT DEFAULT '{}'
 		);
+		-- Migration silencieuse : ajouter les colonnes enrichissement si absentes
+		-- (bases existantes créées avant cette version)
+		-- Les ALTER TABLE ci-dessous sont ignorés si la colonne existe déjà (SQLite)
+		-- Pas d'erreur : SQLite retourne "duplicate column name" qu'on ignore
+
 		CREATE INDEX IF NOT EXISTS idx_famille ON analyses(famille);
 		CREATE INDEX IF NOT EXISTS idx_score   ON analyses(score DESC);
+		CREATE INDEX IF NOT EXISTS idx_date    ON analyses(date DESC);
 		CREATE INDEX IF NOT EXISTS idx_date    ON analyses(date DESC);
 	`); err != nil {
 		db.Close()
 		return nil, err
+	}
+
+	// Migration silencieuse : ajouter les colonnes enrichissement aux bases existantes.
+	// SQLite retourne "duplicate column name" si elles existent déjà — on l'ignore.
+	for _, col := range []string{
+		"ALTER TABLE analyses ADD COLUMN mitre_details TEXT DEFAULT '{}'",
+		"ALTER TABLE analyses ADD COLUMN abuse_scores  TEXT DEFAULT '{}'",
+	} {
+		db.Exec(col) //nolint:errcheck — "duplicate column" ignoré volontairement
 	}
 	return db, nil
 }
@@ -176,7 +196,10 @@ func migrateFromJSON(db *sql.DB) {
 
 // ─── Sauvegarde ───────────────────────────────────────────────────────────────
 
-func SaveAnalysis(results []*models.AnalysisResult, report *ForensicReport) error {
+// SaveAnalysis persiste une analyse dans analyses.db.
+// enrichment est optionnel (nil accepté) — si fourni, les données MITRE et AbuseIPDB
+// sont stockées pour enrichir le dataset d'entraînement Foundation-Sec-8B.
+func SaveAnalysis(results []*models.AnalysisResult, report *ForensicReport, enrichment ...*EnrichmentData) error {
 	db, err := openDB()
 	if err != nil {
 		return fmt.Errorf("openDB: %w", err)
@@ -227,9 +250,48 @@ func SaveAnalysis(results []*models.AnalysisResult, report *ForensicReport) erro
 		}
 
 		id := fmt.Sprintf("%d-%s", time.Now().UnixNano(), sanitizeID(r.Filename))
+		// Sérialiser les enrichissements MITRE + AbuseIPDB si fournis
+		mitreJSON := "{}"
+		abuseJSON := "{}"
+		if len(enrichment) > 0 && enrichment[0] != nil {
+			enc := enrichment[0]
+			// Filtrer les TTPs pertinents pour ce sample
+			if len(enc.MitreTechniques) > 0 {
+				relevant := make(map[string]MitreTechniqueDetail)
+				for _, ttp := range ttps {
+					if detail, ok := enc.MitreTechniques[ttp]; ok {
+						// Tronquer la description pour limiter la taille du JSON
+						if len(detail.Description) > 400 {
+							detail.Description = detail.Description[:400] + "..."
+						}
+						relevant[ttp] = detail
+					}
+				}
+				if len(relevant) > 0 {
+					if b, e := json.Marshal(relevant); e == nil {
+						mitreJSON = string(b)
+					}
+				}
+			}
+			// Filtrer les IPs pertinentes pour ce sample
+			if len(enc.IPReputations) > 0 {
+				relevantIPs := make(map[string]IPReputation)
+				for _, ip := range r.IOCs.IPs {
+					if rep, ok := enc.IPReputations[ip]; ok {
+						relevantIPs[ip] = rep
+					}
+				}
+				if len(relevantIPs) > 0 {
+					if b, e := json.Marshal(relevantIPs); e == nil {
+						abuseJSON = string(b)
+					}
+				}
+			}
+		}
+
 		_, err := tx.Exec(`INSERT OR IGNORE INTO analyses
-			(id,date,filename,famille,classification,score,ttps,ips,domaines,hashes,resume,recommandations,confiance)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			(id,date,filename,famille,classification,score,ttps,ips,domaines,hashes,resume,recommandations,confiance,mitre_details,abuse_scores)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			id,
 			time.Now().UTC().Format(time.RFC3339),
 			r.Filename,
@@ -240,9 +302,11 @@ func SaveAnalysis(results []*models.AnalysisResult, report *ForensicReport) erro
 			marshalSlice(dedup(r.IOCs.IPs)),
 			marshalSlice(dedup(r.IOCs.Domains)),
 			marshalSlice(dedup([]string{r.Hashes.SHA256})),
-			truncate(report.ResumeExecutif, 500),
+			truncateStr(report.ResumeExecutif, 500),
 			marshalSlice(recoms),
 			report.NiveauConfiance,
+			mitreJSON,
+			abuseJSON,
 		)
 		if err != nil {
 			return fmt.Errorf("insert: %w", err)

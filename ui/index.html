@@ -941,6 +941,9 @@
             </div>
             <div class="form-hint" style="margin-top:8px">
               Le modèle sélectionné est utilisé pour la génération des rapports forensic IA.
+              <span id="chain-available-note" style="display:none;font-size:10px;color:#4ade80;font-weight:600;margin-top:4px;display:block">
+                ⛓ Pipeline bi-modèle actif — M1 (cyber spécialiste) → M2 (synthèse structurée) — qualité maximale
+              </span>
               Les modèles absents peuvent être téléchargés automatiquement depuis Hugging Face.
             </div>
           </div>
@@ -1051,6 +1054,54 @@
         <!-- ══ SECTION ENTRAÎNEMENT IA ══ -->
         <div class="card" style="margin-top:16px">
           <div class="card-title">🧠 Entraînement IA — Foundation-Sec-8B</div>
+          <!-- Bandeau alternatif : moteurs plus puissants disponibles -->
+          <div style="padding:10px 14px;background:rgba(16,185,129,.06);border:1px solid rgba(16,185,129,.25);border-radius:6px;margin-bottom:14px">
+            <div style="font-size:11px;font-weight:700;color:#4ade80;margin-bottom:8px;letter-spacing:.04em;text-transform:uppercase">
+              🚀 Moteurs plus puissants disponibles pour la génération de rapports
+            </div>
+            <table style="width:100%;border-collapse:collapse;font-size:11px">
+              <thead>
+                <tr style="border-bottom:1px solid rgba(255,255,255,.08)">
+                  <th style="text-align:left;padding:4px 8px 6px 0;color:var(--text3);font-weight:600">Modèle</th>
+                  <th style="text-align:center;padding:4px 8px 6px;color:var(--text3);font-weight:600">VRAM</th>
+                  <th style="text-align:center;padding:4px 8px 6px;color:var(--text3);font-weight:600">Taille</th>
+                  <th style="text-align:left;padding:4px 0 6px 8px;color:var(--text3);font-weight:600">Spécialité</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr style="border-bottom:1px solid rgba(255,255,255,.04)">
+                  <td style="padding:5px 8px 5px 0">
+                    <span style="color:#f59e0b;font-weight:700">Qwen 2.5 14B Instruct</span>
+                    <span style="font-size:9px;background:rgba(245,158,11,.15);border:1px solid rgba(245,158,11,.3);color:#f59e0b;border-radius:3px;padding:1px 5px;margin-left:4px">Recommandé</span>
+                  </td>
+                  <td style="text-align:center;padding:5px 8px;color:var(--text2)">10 Go</td>
+                  <td style="text-align:center;padding:5px 8px;color:var(--text2)">8.7 Go</td>
+                  <td style="padding:5px 0 5px 8px;color:var(--text3)">JSON structuré supérieur · contexte 32k · meilleure cohérence rapport</td>
+                </tr>
+                <tr style="border-bottom:1px solid rgba(255,255,255,.04)">
+                  <td style="padding:5px 8px 5px 0">
+                    <span style="color:#a78bfa;font-weight:700">Trend Micro Primus 8B</span>
+                    <span style="font-size:9px;background:rgba(167,139,250,.15);border:1px solid rgba(167,139,250,.3);color:#a78bfa;border-radius:3px;padding:1px 5px;margin-left:4px">Cyber spécialisé</span>
+                  </td>
+                  <td style="text-align:center;padding:5px 8px;color:var(--text2)">6 Go</td>
+                  <td style="text-align:center;padding:5px 8px;color:var(--text2)">4.0 Go</td>
+                  <td style="padding:5px 0 5px 8px;color:var(--text3)">10B+ tokens CTI · familles malware · TTPs MITRE · threat intelligence</td>
+                </tr>
+                <tr>
+                  <td style="padding:5px 8px 5px 0">
+                    <span style="color:#93c5fd;font-weight:700">Foundation-Sec-8B (Cisco)</span>
+                    <span style="font-size:9px;background:rgba(37,99,235,.18);border:1px solid rgba(37,99,235,.4);color:#93c5fd;border-radius:3px;padding:1px 5px;margin-left:4px">Fine-tunable</span>
+                  </td>
+                  <td style="text-align:center;padding:5px 8px;color:var(--text2)">6 Go</td>
+                  <td style="text-align:center;padding:5px 8px;color:var(--text2)">4.9 Go</td>
+                  <td style="padding:5px 0 5px 8px;color:var(--text3)">CVEs · CTI · exploit write-ups · seul modèle entraînable sur vos données</td>
+                </tr>
+              </tbody>
+            </table>
+            <div style="margin-top:8px;font-size:10px;color:var(--text3);border-top:1px solid rgba(255,255,255,.06);padding-top:6px">
+              → Sélectionnez et téléchargez ces modèles dans la section <strong style="color:var(--text2)">Moteur IA</strong> ci-dessus · Le moteur le plus puissant disponible est automatiquement sélectionné pour chaque rapport
+            </div>
+          </div>
 
           <!-- Explication du modèle dédié -->
           <div style="padding:12px 14px;background:rgba(37,99,235,.06);border:1px solid rgba(37,99,235,.2);border-radius:6px;margin-bottom:16px">
@@ -1098,7 +1149,10 @@
           <!-- Export dataset -->
           <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em">Export dataset d'entraînement</div>
           <div style="font-size:11px;color:var(--text3);margin-bottom:10px;line-height:1.6">
-            Génère un <code>.jsonl</code> Alpaca depuis <code>analyses.db</code> — prêt pour fine-tuner <strong>Foundation-Sec-8B</strong> avec <a href="https://github.com/unslothai/unsloth" target="_blank" style="color:var(--accent)">Unsloth QLoRA</a> sur GPU externe (Colab, RunPod) ou localement si VRAM ≥ 16 Go.
+            Génère un <code>.jsonl</code> depuis <code>analyses.db</code> enrichi RF + MITRE ATT&amp;CK + AbuseIPDB — prêt pour fine-tuner <strong>Foundation-Sec-8B</strong> avec <a href="https://github.com/unslothai/unsloth" target="_blank" style="color:var(--accent)">Unsloth QLoRA</a> sur GPU externe (Colab, RunPod) ou localement si VRAM ≥ 16 Go.
+            <br><span style="font-size:10px;color:var(--text3);margin-top:3px;display:block">
+              Format : <code>LLaMA 3.1 Chat Template</code> (Foundation-Sec) · Chaque exemple contient : score RF · TTPs MITRE avec descriptions · IPs qualifiées AbuseIPDB (score/100, pays, FAI)
+            </span>
           </div>
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
             <div style="display:flex;align-items:center;gap:8px">
@@ -1736,7 +1790,7 @@ async function submitAnalysis() {
   // Add to queue — chaque item reçoit un uid stable pour éviter les problèmes d'index
   targets.forEach((t, i) => {
     t._uid = 'q-' + Date.now() + '-' + i;
-    state.queue.push({uid: t._uid, id: null, name: t.name, type: t.type, status: 'pending', progress: 0, aiModel: null});
+    state.queue.push({uid: t._uid, id: null, name: t.name, type: t.type, status: 'pending', progress: 0, aiModel: null, statusDetail: ''});
   });
   updateBadges();
   showPage('queue');
@@ -2124,20 +2178,62 @@ function renderQueue() {
     error:      { icon: '❌', label: 'Erreur',                  color: 'var(--red)',    border: 'rgba(220,38,38,.3)',          bg: 'rgba(220,38,38,.03)' },
   };
 
+  // Détecter le modèle actif dans l'UI si pas encore résolu sur l'item de queue
+  function resolveActiveModel() {
+    const checked = document.querySelector('input[name="ai-model-choice"]:checked');
+    if (!checked) return null;
+    const card = checked.closest('[data-model-name]');
+    if (card) return card.dataset.modelName;
+    const v = checked.value;
+    return v.includes('Foundation-Sec') ? 'Foundation-Sec-8B (Cisco)'
+         : v.includes('Qwen2.5-14B')   ? 'Qwen 2.5 14B'
+         : v.includes('Primus')         ? 'Primus 8B CTI'
+         : v.includes('mistral')        ? 'Mistral 7B'
+         : v.replace(/\.gguf$/i,'').replace(/-/g,' ');
+  }
+
   list.innerHTML = state.queue.map(q => {
     const p = phases[q.status] || phases.pending;
     const isActive = q.status === 'running' || q.status === 'ai-report';
 
-    // Badge moteur IA — affiché uniquement pendant la phase rapport IA
-    const engineBadge = (q.status === 'ai-report' && q.aiModel)
+    // Badge moteur IA — affiché dès le préchauffage (running) et pendant la génération (ai-report)
+    const _activeModel = q.aiModel || ((q.status === 'running' || q.status === 'ai-report') ? resolveActiveModel() : null);
+    const _isFoundationSec = _activeModel && _activeModel.includes('Foundation-Sec');
+    const _isGranite       = _activeModel && _activeModel.includes('Granite');
+    const _isPrimus        = _activeModel && _activeModel.includes('Primus');
+    const _isTraining      = _isFoundationSec; // Foundation-Sec = modèle entraînable
+    const engineBadge = _activeModel
       ? `<span style="
             display:inline-flex;align-items:center;gap:4px;
             font-size:10px;font-family:var(--mono);
-            background:rgba(245,158,11,.15);
-            border:1px solid rgba(245,158,11,.3);
-            color:#f59e0b;
-            border-radius:4px;padding:1px 6px;margin-left:6px;
-            white-space:nowrap;">▶ ${escHtml(q.aiModel)}</span>`
+            background:${_isFoundationSec ? 'rgba(37,99,235,.18)' : 'rgba(245,158,11,.15)'};
+            border:1px solid ${_isFoundationSec ? 'rgba(37,99,235,.4)' : 'rgba(245,158,11,.3)'};
+            color:${_isFoundationSec ? '#93c5fd' : '#f59e0b'};
+            border-radius:4px;padding:2px 7px;margin-left:6px;
+            white-space:nowrap;">
+            ${_isFoundationSec ? '🔬' : _isGranite ? '💻' : _isPrimus ? '🛡' : '🤖'} ${escHtml(_activeModel)}
+            ${_isTraining ? '<span style="font-size:9px;opacity:.8;margin-left:3px">(entraînable)</span>' : ''}
+         </span>`
+      : '';
+
+    // ── Ligne de détail temps réel (statusDetail) ─────────────────────────
+    // Alimentée par le flux SSE — montre l'étape exacte en cours dans le moteur IA
+    const detailLine = (q.statusDetail && isActive)
+      ? `<div style="
+            margin-top:5px;padding:4px 10px;
+            background:rgba(0,0,0,.04);border-radius:4px;
+            font-size:10.5px;font-family:var(--mono);
+            color:${p.color};opacity:.9;
+            display:flex;align-items:center;gap:6px;">
+           <span style="flex:1">${escHtml(q.statusDetail)}</span>
+         </div>`
+      : '';
+
+    // Note fine-tuning Foundation-Sec (affichée seulement si pas de détail en cours)
+    const foundationNote = (_isFoundationSec && isActive && !q.statusDetail)
+      ? `<div style="margin-top:4px;font-size:10px;color:#60a5fa;opacity:.75;padding-left:4px;">
+           🧠 Foundation-Sec-8B — Modèle entraînable sur votre dataset RF
+         </div>`
       : '';
 
     // Barre de progression animée pour les phases actives
@@ -2164,6 +2260,8 @@ function renderQueue() {
           <span>${p.label}</span>${engineBadge}
         </div>
       </div>
+      ${detailLine}
+      ${foundationNote}
       ${progressBar}
     </div>`;
   }).join('');
@@ -2309,7 +2407,8 @@ function initLogStream() {
     else if (/vault|chiffr|encrypt/i.test(msg))               color = '#7c3aed';  // violet
     else if (/\[vault\]/i.test(msg))                          color = '#dc2626';
     else if (/\[RETRY\]|\[ENRICH\]|\[KNOWLEDGE\]/i.test(msg)) color = '#0284c7'; // bleu info
-    else if (/\[AI\]|\[AI-FALLBACK\]/i.test(msg))             color = '#0369a1'; // bleu AI
+    else if (/\[AI\]|\[AI-FALLBACK\]|\[AI-CHAIN\]/i.test(msg)) color = '#0369a1'; // bleu AI
+    else if (/\[WARMUP\]/i.test(msg))                          color = '#7c3aed'; // violet warmup
     else if (/Génération|génération|Prompt|prompt/i.test(msg)) color = '#0369a1'; // bleu AI
     else if (/\[TRAINING\]/i.test(msg))                       color = '#7c3aed'; // violet training
 
@@ -2354,6 +2453,50 @@ function initLogStream() {
       } else if (/\[TRAINING\].*✗/i.test(msg)) {
         trainingStatus.style.borderColor = 'rgba(220,38,38,.3)';
         trainingStatus.style.color = '#f87171';
+      }
+    }
+
+    // ── Mise à jour temps réel du statusDetail dans la file d'attente ──────
+    // Les messages SSE du backend alimentent directement l'item actif
+    // pendant toute la phase 'ai-report' (warmup + chargement + génération).
+    {
+      const activeQ = state.queue.find(q => q.status === 'ai-report' || q.status === 'running');
+      if (activeQ) {
+        let detail = '';
+
+        // Préchauffage / chargement du modèle
+        if (/WARMUP.*Préchauffage/i.test(msg))       detail = '⚡ Préchauffage moteur IA…';
+        else if (/WARMUP.*opérationnel|WARMUP.*prêt/i.test(msg)) detail = '✓ Moteur IA prêt';
+        else if (/Chargement du modèle en mémoire/i.test(msg)) {
+          const secs = msg.match(/(\d+)s\s*\/\s*(\d+)s/);
+          detail = secs ? `⏳ Chargement modèle… ${secs[1]}s / ${secs[2]}s` : '⏳ Chargement modèle en VRAM…';
+        }
+        // Pipeline bi-modèle
+        else if (/AI-CHAIN.*Étape 1/i.test(msg))     detail = '🔬 M1 — Extraction technique (cyber spécialiste)…';
+        else if (/AI-CHAIN.*M1 terminé/i.test(msg))  detail = '✓ M1 terminé — passage au M2…';
+        else if (/AI-CHAIN.*Étape 2/i.test(msg))     detail = '🤖 M2 — Chargement moteur synthèse…';
+        else if (/AI-CHAIN.*Redémarrage M2/i.test(msg)) detail = '🔄 Redémarrage moteur M2…';
+        // Génération
+        else if (/Envoi du prompt/i.test(msg))        detail = '📤 Envoi du prompt au moteur…';
+        else if (/Génération terminée|Génération IA.*terminée/i.test(msg)) detail = '✓ Génération terminée — parsing JSON…';
+        else if (/Génération du PDF/i.test(msg))      detail = '📄 Génération PDF en cours…';
+        else if (/Génération.*tokens|tokens générés/i.test(msg)) {
+          detail = '⚙ Génération en cours…';
+        }
+        // Enrichissement
+        else if (/ENRICH.*MITRE.*TTPs/i.test(msg))   detail = '🗂 Enrichissement MITRE ATT&CK…';
+        else if (/ENRICH.*AbuseIPDB/i.test(msg))      detail = '🔍 Vérification réputation IPs…';
+        // Mémorisation
+        else if (/KNOWLEDGE.*MÉMORISATION/i.test(msg)) detail = '💾 Mémorisation dans la base…';
+        // Succès
+        else if (/✓ Rapport PDF.*généré/i.test(msg)) detail = '✅ Rapport généré avec succès';
+        // Erreur
+        else if (/indisponible|échoué|ERREUR/i.test(msg) && /AI/i.test(msg)) detail = '⚠ ' + msg.replace(/^\[\d{2}:\d{2}:\d{2}\]\s*/, '').substring(0, 60);
+
+        if (detail) {
+          activeQ.statusDetail = detail;
+          renderQueue();
+        }
       }
     }
   };

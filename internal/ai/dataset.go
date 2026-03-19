@@ -73,7 +73,8 @@ func ExportTrainingDataset(outputPath string, minScore int) (*DatasetStats, erro
 
 	rows, err := db.Query(`
 		SELECT id, date, filename, famille, classification, score,
-		       ttps, ips, domaines, hashes, resume, recommandations, confiance
+		       ttps, ips, domaines, hashes, resume, recommandations, confiance,
+		       COALESCE(mitre_details, '{}'), COALESCE(abuse_scores, '{}')
 		FROM analyses
 		WHERE score >= ?
 		ORDER BY date DESC`, minScore)
@@ -97,11 +98,12 @@ func ExportTrainingDataset(outputPath string, minScore int) (*DatasetStats, erro
 		stats.Total++
 
 		var e KnowledgeEntry
-		var tJ, iJ, dJ, hJ, rJ string
+		var tJ, iJ, dJ, hJ, rJ, mitreJ, abuseJ string
 		if err := rows.Scan(
 			&e.ID, &e.Date, &e.Filename, &e.FamillePresumee,
 			&e.Classification, &e.ScoreGlobal,
 			&tJ, &iJ, &dJ, &hJ, &e.ResumeExecutif, &rJ, &e.NiveauConfiance,
+			&mitreJ, &abuseJ,
 		); err != nil {
 			stats.Skipped++
 			continue
@@ -111,6 +113,13 @@ func ExportTrainingDataset(outputPath string, minScore int) (*DatasetStats, erro
 		e.Domaines = unmarshalSlice(dJ)
 		e.Hashes = unmarshalSlice(hJ)
 		e.Recommandations = unmarshalSlice(rJ)
+		// Désérialiser les enrichissements MITRE + AbuseIPDB
+		if mitreJ != "" && mitreJ != "{}" {
+			json.Unmarshal([]byte(mitreJ), &e.MitreDetails)
+		}
+		if abuseJ != "" && abuseJ != "{}" {
+			json.Unmarshal([]byte(abuseJ), &e.AbuseScores)
+		}
 
 		// Construire l'input (contexte sandbox brut que le modèle recevra)
 		inputText := buildTrainingInput(e)
@@ -176,7 +185,66 @@ func buildTrainingInput(e KnowledgeEntry) string {
 		sb.WriteString(fmt.Sprintf("FAMILLE CONNUE  : %s\n", e.FamillePresumee))
 	}
 
+	// ── Enrichissement MITRE ATT&CK (descriptions stockées depuis l'API) ────────
+	if len(e.MitreDetails) > 0 {
+		sb.WriteString("\nTECHNIQUES MITRE ATT&CK OBSERVEES :\n")
+		for ttpID, detail := range e.MitreDetails {
+			line := fmt.Sprintf("  [%s] %s", ttpID, detail.Nom)
+			if detail.Tactique != "" {
+				line += fmt.Sprintf(" | Tactique: %s", detail.Tactique)
+			}
+			if detail.Description != "" {
+				desc := detail.Description
+				if len(desc) > 200 {
+					desc = desc[:200] + "..."
+				}
+				line += fmt.Sprintf(" | %s", desc)
+			}
+			if len(detail.Mitigations) > 0 {
+				line += fmt.Sprintf(" | Mitigations: %s", strings.Join(detail.Mitigations[:minInt(2, len(detail.Mitigations))], "; "))
+			}
+			sb.WriteString(line + "\n")
+		}
+	}
+
+	// ── Réputation AbuseIPDB (scores et catégories d'abus) ───────────────────────
+	if len(e.AbuseScores) > 0 {
+		maliciousCount := 0
+		for _, rep := range e.AbuseScores {
+			if rep.EstMalveillant {
+				maliciousCount++
+			}
+		}
+		sb.WriteString(fmt.Sprintf("\nREPUTATION IPs (AbuseIPDB) : %d IPs enrichies, %d confirmées malveillantes\n",
+			len(e.AbuseScores), maliciousCount))
+		for ip, rep := range e.AbuseScores {
+			statut := "légitime"
+			if rep.EstMalveillant {
+				statut = fmt.Sprintf("MALVEILLANTE score=%d/100", rep.Score)
+			}
+			line := fmt.Sprintf("  %s : %s", ip, statut)
+			if rep.Pays != "" {
+				line += fmt.Sprintf(" | Pays=%s", rep.Pays)
+			}
+			if rep.ISP != "" {
+				line += fmt.Sprintf(" | FAI=%s", rep.ISP)
+			}
+			if len(rep.Categories) > 0 {
+				line += fmt.Sprintf(" | Types=%s", strings.Join(rep.Categories, ","))
+			}
+			sb.WriteString(line + "\n")
+		}
+	}
+
 	return sb.String()
+}
+
+// min helper pour dataset.go (Go < 1.21 compat)
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // ─── Construction de l'output ─────────────────────────────────────────────────

@@ -99,7 +99,7 @@ func main() {
 
 	// Conversion JSONL → texte brut pour llama-finetune
 	datasetTXT := strings.TrimSuffix(datasetJSONL, ".jsonl") + ".txt"
-	if err := convertJSONLtoTXT(datasetJSONL, datasetTXT); err != nil {
+	if err := convertJSONLtoTXT(datasetJSONL, datasetTXT, isFoundationSec); err != nil {
 		fatal("Conversion dataset : " + err.Error())
 	}
 	log.Printf("  ✓ Converti → %s", datasetTXT)
@@ -121,13 +121,26 @@ func main() {
 
 	// ── 4. Modèle de base ─────────────────────────────────────────────────────
 	sep("[4/5] MODÈLE DE BASE")
-	baseModel := findBaseModel(mDir)
+	baseModel, modelName := findBaseModel(mDir)
 	if baseModel == "" {
-		fatal("Aucun modèle .gguf Mistral dans moteur/models/ — lancez d'abord une analyse IA")
+		fatal("Aucun modèle .gguf dans moteur/models/ — téléchargez Foundation-Sec-8B depuis l'interface")
 	}
-	log.Printf("  ✓ Modèle : %s", filepath.Base(baseModel))
+	isFoundationSec := strings.Contains(baseModel, "Foundation-Sec")
+	log.Printf("  ✓ Modèle de base : %s", modelName)
+	if isFoundationSec {
+		log.Println("  ✓ Foundation-Sec-8B sélectionné — template LLaMA 3.1 Chat activé")
+	} else {
+		log.Println("  ⚠ Mistral sélectionné — installez Foundation-Sec-8B pour de meilleurs résultats")
+	}
 
-	loraOut := filepath.Join(mDir, "lora", "forensic-fr-lora.bin")
+	// Nom du fichier de sortie adapté au modèle fine-tuné
+	loraBaseName := "forensic-fr-lora.bin"
+	ggufOutName := "mistral-7b-forensic-fr-Q4_K_M.gguf"
+	if isFoundationSec {
+		loraBaseName = "foundation-sec-forensic-fr-lora.bin"
+		ggufOutName = "Foundation-Sec-8B-forensic-fr-Q4_K_M.gguf"
+	}
+	loraOut := filepath.Join(mDir, "lora", loraBaseName)
 	os.MkdirAll(filepath.Dir(loraOut), 0755)
 	log.Printf("  ✓ Sortie LoRA : %s", loraOut)
 
@@ -167,7 +180,7 @@ func main() {
 
 	// Quantification
 	if quantizeBin != "" {
-		ggufOut := filepath.Join(mDir, "lora", "mistral-7b-forensic-fr-Q4_K_M.gguf")
+		ggufOut := filepath.Join(mDir, "lora", ggufOutName)
 		log.Println("\n  Quantification Q4_K_M...")
 		if err := runCmd(quantizeBin, loraOut, ggufOut, "Q4_K_M"); err != nil {
 			log.Printf("  ⚠ Quantification échouée : %v", err)
@@ -207,7 +220,14 @@ func selectProfile(vramFreeGB float64, hasGPU bool) Profile {
 
 // ─── Conversion JSONL → TXT ───────────────────────────────────────────────────
 
-func convertJSONLtoTXT(src, dst string) error {
+// convertJSONLtoTXT convertit le dataset Alpaca JSONL vers le format texte
+// adapté au modèle cible :
+//   - Foundation-Sec-8B (LLaMA 3.1) → template <|begin_of_text|> ... <|eot_id|>
+//   - Mistral 7B                     → template Alpaca ### Instruction / ### Response
+//
+// Le template LLaMA 3.1 est obligatoire pour Foundation-Sec — sinon le modèle
+// fine-tuné ne reconnaît pas les tokens spéciaux et produit des réponses incohérentes.
+func convertJSONLtoTXT(src, dst string, foundationSec bool) error {
 	data, err := os.ReadFile(src)
 	if err != nil {
 		return err
@@ -224,13 +244,28 @@ func convertJSONLtoTXT(src, dst string) error {
 		if instruction == "" || output == "" {
 			continue
 		}
-		sb.WriteString("### Instruction:\n")
-		sb.WriteString(instruction)
-		sb.WriteString("\n\n### Input:\n")
-		sb.WriteString(input)
-		sb.WriteString("\n\n### Response:\n")
-		sb.WriteString(output)
-		sb.WriteString("\n\n")
+		if foundationSec {
+			// Template LLaMA 3.1 Chat — Foundation-Sec-8B natif
+			sb.WriteString("<|begin_of_text|>")
+			sb.WriteString("<|start_header_id|>system<|end_header_id|>\n\n")
+			sb.WriteString(instruction)
+			sb.WriteString("<|eot_id|>")
+			sb.WriteString("<|start_header_id|>user<|end_header_id|>\n\n")
+			sb.WriteString(input)
+			sb.WriteString("<|eot_id|>")
+			sb.WriteString("<|start_header_id|>assistant<|end_header_id|>\n\n")
+			sb.WriteString(output)
+			sb.WriteString("<|eot_id|>\n")
+		} else {
+			// Template Alpaca — Mistral 7B
+			sb.WriteString("### Instruction:\n")
+			sb.WriteString(instruction)
+			sb.WriteString("\n\n### Input:\n")
+			sb.WriteString(input)
+			sb.WriteString("\n\n### Response:\n")
+			sb.WriteString(output)
+			sb.WriteString("\n\n")
+		}
 	}
 	return os.WriteFile(dst, []byte(sb.String()), 0644)
 }
@@ -400,25 +435,33 @@ func dlFile(url, dest string) error {
 
 // ─── Modèle de base ───────────────────────────────────────────────────────────
 
-func findBaseModel(mDir string) string {
+// findBaseModel retourne le modèle GGUF à utiliser comme base pour le fine-tuning.
+// Priorité : Foundation-Sec-8B (Cisco, LLaMA 3.1 base, Apache 2.0, seul fine-tunable officiellement)
+// → Mistral 7B en fallback (moins optimal — architecture différente)
+func findBaseModel(mDir string) (path string, modelName string) {
 	modelsDir := filepath.Join(mDir, "models")
-	for _, name := range []string{
-		"mistral-7b-instruct-v0.2.Q4_K_M.gguf",
-		"mistral-7b-instruct-v0.3.Q4_K_M.gguf",
-	} {
-		p := filepath.Join(modelsDir, name)
+
+	// Priorité 1 : Foundation-Sec-8B Instruct (cible principale du fine-tuning)
+	priority := []struct{ file, name string }{
+		{"Foundation-Sec-8B-Instruct-Q4_K_M.gguf", "Foundation-Sec-8B (Cisco — recommandé)"},
+		{"mistral-7b-instruct-v0.2.Q4_K_M.gguf", "Mistral 7B Instruct v0.2 (fallback)"},
+		{"mistral-7b-instruct-v0.3.Q4_K_M.gguf", "Mistral 7B Instruct v0.3 (fallback)"},
+	}
+	for _, m := range priority {
+		p := filepath.Join(modelsDir, m.file)
 		if _, err := os.Stat(p); err == nil {
-			return p
+			return p, m.name
 		}
 	}
+
+	// Fallback générique : n'importe quel GGUF présent
 	entries, _ := os.ReadDir(modelsDir)
 	for _, e := range entries {
-		if strings.ToLower(filepath.Ext(e.Name())) == ".gguf" &&
-			strings.Contains(strings.ToLower(e.Name()), "mistral") {
-			return filepath.Join(modelsDir, e.Name())
+		if strings.ToLower(filepath.Ext(e.Name())) == ".gguf" {
+			return filepath.Join(modelsDir, e.Name()), e.Name()
 		}
 	}
-	return ""
+	return "", ""
 }
 
 // ─── moteurDir ────────────────────────────────────────────────────────────────
@@ -498,9 +541,11 @@ func sep(title string) {
 
 func printBanner() {
 	log.Println()
-	log.Println("  ╔════════════════════════════════════════════════╗")
-	log.Println("  ║   RF Sandbox Go — Entraîneur LoRA              ║")
-	log.Println("  ║   100% Go — llama-finetune natif (zéro Python) ║")
-	log.Println("  ╚════════════════════════════════════════════════╝")
+	log.Println("  ╔════════════════════════════════════════════════════╗")
+	log.Println("  ║   RF Sandbox Go — Entraîneur LoRA                  ║")
+	log.Println("  ║   100% Go — llama-finetune natif (zéro Python)     ║")
+	log.Println("  ║   Cible : Foundation-Sec-8B (Cisco, Apache 2.0)    ║")
+	log.Println("  ║   Format : LLaMA 3.1 Chat Template                 ║")
+	log.Println("  ╚════════════════════════════════════════════════════╝")
 	log.Println()
 }

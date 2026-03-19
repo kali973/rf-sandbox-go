@@ -113,6 +113,145 @@ type Recommandation struct {
 
 // ─── Construction du prompt ───────────────────────────────────────────────────
 
+// ─── Prompts pipeline bi-modèle ──────────────────────────────────────────────
+
+// TechExtraction contient le résultat JSON partiel produit par M1 (extraction technique).
+// C'est l'intermédiaire entre M1 et M2 dans le pipeline chaîné.
+type TechExtraction struct {
+	Famille          string   `json:"famille"`
+	TTPsConfirmes    []string `json:"ttps_confirmes"`
+	InfraC2          []string `json:"infra_c2"`
+	VecteurInfection string   `json:"vecteur_infection"`
+	Propagation      string   `json:"propagation_estimee"`
+	IOCsNets         []string `json:"iocs_nets"`
+	Comportements    []string `json:"comportements_cles"`
+	Confiance        string   `json:"confiance"` // "HAUTE" | "MOYENNE" | "FAIBLE"
+}
+
+// BuildExtractionPrompt construit le prompt court pour M1 (spécialiste cyber).
+// Focalisé sur l'extraction technique pure — famille, TTPs, C2, IOCs.
+// Volontairement court (~6k chars) pour maximiser la précision du spécialiste.
+func BuildExtractionPrompt(results []*models.AnalysisResult, enrichment *EnrichmentData) string {
+	var sb strings.Builder
+
+	sb.WriteString("Tu es un analyste malware expert CTI. Analyse les données sandbox ci-dessous.\n")
+	sb.WriteString("Identifie avec précision : famille malware, TTPs MITRE confirmés, infrastructure C2,\n")
+	sb.WriteString("vecteur d'infection, capacités de propagation et IOCs réseaux.\n\n")
+	sb.WriteString("Réponds UNIQUEMENT en JSON valide, sans texte avant ni après :\n")
+	sb.WriteString(`{
+  "famille": "nom exact de la famille malware ou 'Inconnue'",
+  "ttps_confirmes": ["T1059.001", "T1071"],
+  "infra_c2": ["ip:port ou domaine C2"],
+  "vecteur_infection": "description courte du vecteur",
+  "propagation_estimee": "CRITIQUE|ELEVE|MOYEN|FAIBLE",
+  "iocs_nets": ["hash", "ip", "domaine"],
+  "comportements_cles": ["comportement 1 observé", "comportement 2"],
+  "confiance": "HAUTE|MOYENNE|FAIBLE"
+}` + "\n\n")
+
+	sb.WriteString("--- DONNÉES SANDBOX ---\n")
+	for _, r := range results {
+		sb.WriteString(fmt.Sprintf("Fichier: %s | Score: %d/10 | Famille: %s\n",
+			r.Filename, r.Score, r.Family))
+		if len(r.Signatures) > 0 {
+			sb.WriteString("Signatures comportementales:\n")
+			for i, sig := range r.Signatures {
+				if i >= 8 {
+					break
+				}
+				name := sig.Label
+				if name == "" {
+					name = sig.Name
+				}
+				sb.WriteString(fmt.Sprintf("  [%d] %s (score=%d, TTPs=%s)\n",
+					i+1, name, sig.Score, strings.Join(sig.TTP, ",")))
+			}
+		}
+		if len(r.IOCs.IPs) > 0 {
+			sb.WriteString(fmt.Sprintf("IPs contactées: %s\n", strings.Join(r.IOCs.IPs[:min8(len(r.IOCs.IPs), 10)], ", ")))
+		}
+		if len(r.IOCs.Domains) > 0 {
+			sb.WriteString(fmt.Sprintf("Domaines C2: %s\n", strings.Join(r.IOCs.Domains[:min8(len(r.IOCs.Domains), 5)], ", ")))
+		}
+		if r.Hashes.SHA256 != "" {
+			sb.WriteString(fmt.Sprintf("SHA256: %s\n", r.Hashes.SHA256))
+		}
+	}
+
+	if enrichment != nil && len(enrichment.MitreTechniques) > 0 {
+		sb.WriteString("\n--- ENRICHISSEMENT MITRE ---\n")
+		for id, detail := range enrichment.MitreTechniques {
+			sb.WriteString(fmt.Sprintf("  %s: %s (%s)\n", id, detail.Nom, detail.Tactique))
+		}
+	}
+	return sb.String()
+}
+
+// BuildSynthesisPrompt construit le prompt M2 à partir du résultat M1.
+// M2 (Qwen 14B) reçoit l'extraction technique et produit le rapport JSON complet.
+func BuildSynthesisPrompt(
+	results []*models.AnalysisResult,
+	extraction *TechExtraction,
+	enrichment *EnrichmentData,
+	similar []SimilarEntry,
+	geoData map[string]GeoInfo,
+) string {
+	var sb strings.Builder
+
+	sb.WriteString("Tu es un analyste senior CERT/CSIRT francophone. ")
+	sb.WriteString("Un moteur IA spécialisé en cybersécurité a déjà effectué l'extraction technique.\n")
+	sb.WriteString("Tu dois produire le rapport forensic complet au format JSON en exploitant ces données.\n\n")
+
+	sb.WriteString("--- EXTRACTION TECHNIQUE (résultat moteur cyber spécialisé) ---\n")
+	if b, err := json.Marshal(extraction); err == nil {
+		sb.Write(b)
+	}
+	sb.WriteString("\n\n")
+
+	// Contexte métier enrichi
+	for _, r := range results {
+		sb.WriteString(fmt.Sprintf("Contexte: %s | Score sandbox: %d/10\n", r.Filename, r.Score))
+	}
+
+	// Données AbuseIPDB si disponibles
+	if enrichment != nil && len(enrichment.IPReputations) > 0 {
+		sb.WriteString("\n--- RÉPUTATION IPs (AbuseIPDB) ---\n")
+		for ip, rep := range enrichment.IPReputations {
+			if rep.EstMalveillant {
+				sb.WriteString(fmt.Sprintf("  %s: score=%d/100, pays=%s, FAI=%s\n",
+					ip, rep.Score, rep.Pays, rep.ISP))
+			}
+		}
+	}
+
+	// Analyses similaires depuis la base de connaissances
+	if len(similar) > 0 {
+		sb.WriteString("\n--- ANALYSES SIMILAIRES (base de connaissances) ---\n")
+		for _, s := range similar {
+			sb.WriteString(fmt.Sprintf("  Similarité %d%%: %s — %s\n",
+				s.Score, s.Entry.Filename, s.Raison))
+		}
+	}
+
+	// Schéma JSON de sortie attendu — M2 doit produire le ForensicReport complet
+	// On lui demande exactement le même format que BuildForensicPrompt (mono-modèle)
+	sb.WriteString("\nProduis le rapport forensic complet au format JSON valide, sans texte avant ni après.\n")
+	sb.WriteString("Utilise l'extraction technique ci-dessus comme base factuelle — enrichis avec le contexte métier.\n")
+	sb.WriteString("Le JSON doit contenir tous les champs du ForensicReport : ")
+	sb.WriteString("classification, score_global, resume_executif, pourquoi_malveillant, ")
+	sb.WriteString("timeline_attaque, risque_lateralisation, etat_compromission, donnees_exposees, ")
+	sb.WriteString("analyse_comportementale, analyse_reseau, techniques_mitre, iocs_critiques, ")
+	sb.WriteString("attribution, posture_reponse, recommandations, niveau_confiance, conclusion.\n")
+	return sb.String()
+}
+
+func min8(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // BuildForensicPrompt construit le prompt management à partir des résultats sandbox.
 // Accepte des donnees d'enrichissement externes (MITRE, AbuseIPDB) et la base de connaissances.
 func BuildForensicPrompt(results []*models.AnalysisResult, enrichment *EnrichmentData, similar []SimilarEntry, geoData map[string]GeoInfo) string {
@@ -986,6 +1125,40 @@ func cleanInvalidEscapes(s string) string {
 
 // ParseForensicResponse parse la réponse brute de l'IA en ForensicReport.
 // et JSON tronqué (tente une réparation des accolades manquantes).
+// ParseExtractionResponse parse la réponse JSON partielle de M1 (extraction technique).
+// Plus tolérant que ParseForensicResponse — le JSON partiel de M1 est moins strict.
+func ParseExtractionResponse(raw string) (*TechExtraction, error) {
+	// Même nettoyage que ParseForensicResponse
+	// Nettoyer les escapes JSON invalides
+	raw = strings.NewReplacer(`\_`, `_`, `\.`, `.`, `\:`, `:`).Replace(raw)
+	raw = strings.TrimSpace(raw)
+
+	// Extraire le premier objet JSON
+	start := strings.Index(raw, "{")
+	end := strings.LastIndex(raw, "}")
+	if start < 0 || end <= start {
+		return nil, fmt.Errorf("aucun objet JSON trouvé dans la réponse M1")
+	}
+	raw = raw[start : end+1]
+
+	var extraction TechExtraction
+	if err := json.Unmarshal([]byte(raw), &extraction); err != nil {
+		return nil, fmt.Errorf("parsing extraction M1: %w", err)
+	}
+
+	// Valeurs par défaut si vides
+	if extraction.Famille == "" {
+		extraction.Famille = "Inconnue"
+	}
+	if extraction.Confiance == "" {
+		extraction.Confiance = "FAIBLE"
+	}
+	if extraction.Propagation == "" {
+		extraction.Propagation = "MOYEN"
+	}
+	return &extraction, nil
+}
+
 func ParseForensicResponse(raw string) (*ForensicReport, error) {
 	// Mistral génère parfois des séquences d'échappement JSON invalides (\_ \. \: etc.)
 	// On les nettoie avant tout parsing
