@@ -22,7 +22,7 @@ import (
 const (
 	BaseURL      = "https://sandbox.recordedfuture.com/api/v0"
 	PollInterval = 15 * time.Second
-	PollTimeout  = 10 * time.Minute
+	PollTimeout  = 15 * time.Minute // Malwares avec comportements tardifs (tâches planifiées, DLL sideloading) peuvent dépasser 10 min
 )
 
 // Client est le client API Recorded Future Sandbox
@@ -288,12 +288,20 @@ func (c *Client) waitForCompletion(sampleID string, timeout time.Duration) error
 		time.Sleep(PollInterval)
 	}
 
-	// Timeout atteint — pour les non-exécutables, on tente quand même fetchResults
-	if isNonExec {
-		log.Printf("[RF-SANDBOX] [%s] Timeout atteint pour fichier non-executable — recuperation des resultats disponibles.", sampleID[:min(12, len(sampleID))])
-		return nil
+	// Timeout atteint — tenter de récupérer les résultats partiels dans tous les cas.
+	// RF Sandbox peut avoir des données utiles même si l'analyse n'est pas "reported" :
+	// signatures, réseau, processus déjà capturés avant le timeout.
+	shortID := sampleID
+	if len(shortID) > 12 {
+		shortID = shortID[:12]
 	}
-	return fmt.Errorf("timeout pour %s", sampleID)
+	if isNonExec {
+		log.Printf("[RF-SANDBOX] [%s] Timeout atteint pour fichier non-executable — recuperation des resultats disponibles.", shortID)
+	} else {
+		log.Printf("[RF-SANDBOX] [%s] Timeout (%v) — tentative de recuperation des resultats partiels (comportements deja captures).", shortID, timeout)
+		log.Printf("[RF-SANDBOX] [%s] Astuce : augmentez sandbox_timeout dans config.json pour les malwares avec comportements tardifs.", shortID)
+	}
+	return nil // nil = tenter fetchResults même avec timeout
 }
 
 // ─── Récupération résultats ───────────────────────────────────────────────
@@ -1118,6 +1126,11 @@ func (c *Client) AnalyzeBatch(targets []string, private bool) []*models.Analysis
 					c.sandboxTimeout = 600
 				}
 			}
+			// Pour tous les exécutables : log d'aide si le timeout par défaut est court
+			if execExts[ext] && c.sandboxTimeout > 0 && c.sandboxTimeout < 300 {
+				log.Printf("[INFO] sandbox_timeout=%ds configuré — pour des malwares avec persistance/C2,")
+				log.Printf("[INFO] augmentez à 600s dans config.json pour capturer : tâches planifiées, curl/FTP répétés, DLL sideloading.")
+			}
 
 			log.Printf("[RF-API] → Soumission de %s...", base)
 			sampleID, err := c.submitWithRetry(tgt, private, maxRetries)
@@ -1130,12 +1143,14 @@ func (c *Client) AnalyzeBatch(targets []string, private bool) []*models.Analysis
 			}
 			log.Printf("[RF-API]   → ID: %s — analyse en cours, attente des résultats...", sampleID)
 			if err := c.waitForCompletion(sampleID, pollTimeout); err != nil {
+				// Erreur réseau réelle (pas un timeout) — impossible de récupérer
 				log.Printf("[ERREUR] attente %s: %v", sampleID, err)
 				results[idx] = &models.AnalysisResult{
 					SampleID: sampleID, Filename: base, Status: "failed", Error: err.Error(),
 				}
 				return
 			}
+			// waitForCompletion retourne nil sur timeout → tenter fetchResults partiels
 			result, err := c.fetchResults(sampleID)
 			if err != nil {
 				log.Printf("[ERREUR] récupération %s: %v", sampleID, err)

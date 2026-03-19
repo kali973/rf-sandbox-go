@@ -1938,6 +1938,22 @@ function clearSubmitForm() {
 }
 
 // ─── RESULTS ─────────────────────────────────────────────────────────────────
+// Affiche un avertissement si l'analyse sandbox est incomplète
+// (fichier non exécuté : 0 signatures, 0 domaines, 0 processus)
+function dataQualityWarning(result) {
+  if (result.data_quality !== 'incomplete') return '';
+  const isMasked = result.masked_exec;
+  const hint = isMasked
+    ? `⚠ Extension trompeuse détectée (${escHtml(result.filename)}) — resoumettre renommé en .exe`
+    : '⚠ Analyse incomplète — fichier non exécuté en sandbox (données comportementales absentes)';
+  return `<div style="
+      margin:6px 0;padding:7px 10px;
+      background:rgba(245,158,11,.10);border:1px solid rgba(245,158,11,.35);
+      border-radius:5px;font-size:11px;color:#f59e0b;line-height:1.5;">
+      ${hint}
+   </div>`;
+}
+
 function renderResults() {
   const tbody = document.getElementById('results-tbody');
   const table = document.getElementById('results-table');

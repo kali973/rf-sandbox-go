@@ -439,11 +439,20 @@ func BuildForensicPrompt(results []*models.AnalysisResult, enrichment *Enrichmen
   "indicateurs_compromission": "Liste precise et exhaustive : adresses IP et domaines a bloquer au pare-feu/proxy, noms de fichiers suspects avec leurs chemins complets, cles de registre creees ou modifiees (HKLM/HKCU Run, services, etc.), noms de processus anormaux, hashs MD5/SHA256 a ajouter aux listes noires EDR/antivirus. Event IDs Windows specifiques a surveiller (4688 creation processus, 7045 service installe, 4625 echec auth, etc.).",
 
   "niveau_confiance": "CHOISIS UNE SEULE VALEUR : ELEVE / MOYEN / FAIBLE",
+    "qualite_analyse": "UNIQUEMENT si meta_qualite.analyse_incomplete=true : expliquer clairement l'insuffisance des données (ex: analyse statique uniquement, fichier non-PE ou extension trompeuse). Recommander de resoumettre en renommant le fichier .exe. Si données comportementales présentes : omettre.",
+
   "conclusion": "4 a 5 phrases de synthese executive : (1) verdict definitif sur la nature et la gravite reelle de la menace, (2) etat actuel de la compromission et risque de propagation, (3) les deux actions les plus urgentes dans l'heure qui vient, (4) consequences concretes et chiffrees si aucune action dans les 24h (paralysie, vol de donnees, violation RGPD, etc.), (5) message au COMEX : ce que cet incident revele sur la posture de securite et ce qu'il faut corriger a long terme."
 }`
 
 	return fmt.Sprintf(`Tu es un analyste senior CERT/CSIRT qui redige un rapport forensique d'incident pour le management.
 Tes lecteurs sont le RSSI, le DSI, le PDG et le Conseil d'Administration — ils ont besoin de comprendre la menace, pas juste de voir des donnees techniques.
+
+RÈGLE ABSOLUE — INTÉGRITÉ DES DONNÉES :
+  1. N'invente JAMAIS un comportement, IOC, domaine, IP, fichier ou technique non présent dans les données fournies.
+  2. Si les données sandbox sont vides (0 signatures, 0 processus, 0 domaines) : indique-le EXPLICITEMENT dans qualite_analyse et ne génère PAS de timeline comportementale inventée.
+  3. La timeline ne doit contenir que des phases "detecte": true basées sur des faits réels observés en sandbox.
+  4. Si une section n'a pas de données, écris "Non observé en sandbox — données insuffisantes."
+  5. Consulte le champ meta_qualite.analyse_incomplete : si true, adapter le niveau de certitude de l'ensemble du rapport.
 
 MISSION : Analyser les donnees sandbox ci-dessous et produire un rapport qui repond aux 5 questions que pose TOUJOURS le management face a un incident :
   1. "Est-ce vraiment une attaque ou une fausse alerte ?" -> champ pourquoi_malveillant
@@ -885,6 +894,38 @@ func buildCondensedData(results []*models.AnalysisResult) map[string]interface{}
 		}
 
 		data["echantillons"] = append(data["echantillons"].([]interface{}), sample)
+	}
+
+	// ── Méta-qualité de l'analyse ────────────────────────────────────
+	// Indique au modèle si les données sont suffisantes pour des conclusions fiables.
+	// Permet de prévenir les hallucinations sur analyses avec données pauvres.
+	nbSigs := 0
+	nbDomains := 0
+	nbProcesses := 0
+	nbKernelEvents := 0
+	for _, r := range results {
+		nbSigs += len(r.Signatures)
+		nbDomains += len(r.IOCs.Domains)
+		nbProcesses += len(r.Processes)
+		nbKernelEvents += len(r.KernelEvents)
+	}
+
+	analyseIncomplete := nbSigs == 0 && nbDomains == 0 && nbProcesses == 0
+	data["meta_qualite"] = map[string]interface{}{
+		"nb_signatures":        nbSigs,
+		"nb_domaines_iocs":     nbDomains,
+		"nb_processus":         nbProcesses,
+		"nb_evenements_kernel": nbKernelEvents,
+		"analyse_incomplete":   analyseIncomplete,
+		"avertissement": func() string {
+			if analyseIncomplete {
+				return "DONNÉES INSUFFISANTES — 0 signatures comportementales, 0 domaines, 0 processus. " +
+					"Le fichier n'a probablement pas été exécuté en sandbox (extension trompeuse, fichier non-PE, " +
+					"ou sandbox non compatible). NE PAS inférer de comportements non observés. " +
+					"Baser toutes les conclusions uniquement sur les données statiques disponibles."
+			}
+			return "Données sandbox disponibles — baser les conclusions sur les faits observés."
+		}(),
 	}
 
 	return data

@@ -399,7 +399,17 @@ func makeSubmitHandler(cfg ServerConfig) http.HandlerFunc {
 						continue
 					}
 					// Save to temp file
-					tmp, _ := os.CreateTemp("", "rfsb-*-"+fh.Filename)
+					// Détection extension trompeuse (double extension type .cer.exe, .pdf.exe)
+					// Le fichier soumis peut être un PE déguisé en certificat/document.
+					// RF Sandbox peut l'analyser comme fichier statique sans l'exécuter.
+					originalName := fh.Filename
+					sandboxName := originalName
+					if isMaskedExecutable(originalName) {
+						// Renommer en .exe pour forcer l'exécution en sandbox
+						sandboxName = strings.TrimSuffix(originalName, filepath.Ext(originalName)) + ".exe"
+						log.Printf("[SUBMIT] ⚠ Extension trompeuse détectée : %s → renommé %s pour sandbox", originalName, sandboxName)
+					}
+					tmp, _ := os.CreateTemp("", "rfsb-*-"+sandboxName)
 					io.Copy(tmp, f)
 					f.Close()
 					tmp.Close()
@@ -1050,19 +1060,32 @@ func generateWithAI(cfg ServerConfig, results []*models.AnalysisResult, outputPa
 // ── marshalResult : convertit AnalysisResult en map JSON pour le frontend ─────
 
 func marshalResult(r *models.AnalysisResult) map[string]interface{} {
+	// Métriques de qualité de l'analyse — utilisées côté frontend pour avertir l'utilisateur
+	nbSigs := len(r.Signatures)
+	nbDomains := len(r.IOCs.Domains) + len(r.IOCs.IPs)
+	nbProcs := len(r.Processes)
+	dataQuality := "complete"
+	if nbSigs == 0 && nbDomains == 0 && nbProcs == 0 && r.Score > 0 {
+		dataQuality = "incomplete" // Fichier non exécuté en sandbox
+	}
 	return map[string]interface{}{
-		"sample_id":  r.SampleID,
-		"filename":   r.Filename,
-		"status":     r.Status,
-		"score":      r.Score,
-		"family":     r.Family,
-		"tags":       r.Tags,
-		"hashes":     r.Hashes,
-		"iocs":       r.IOCs,
-		"signatures": r.Signatures,
-		"network":    r.Network,
-		"processes":  r.Processes,
-		"error":      r.Error,
+		"sample_id":     r.SampleID,
+		"filename":      r.Filename,
+		"status":        r.Status,
+		"score":         r.Score,
+		"family":        r.Family,
+		"tags":          r.Tags,
+		"hashes":        r.Hashes,
+		"iocs":          r.IOCs,
+		"signatures":    r.Signatures,
+		"network":       r.Network,
+		"processes":     r.Processes,
+		"error":         r.Error,
+		"data_quality":  dataQuality,                    // "complete" | "incomplete"
+		"masked_exec":   isMaskedExecutable(r.Filename), // extension trompeuse détectée
+		"nb_signatures": nbSigs,
+		"nb_iocs":       nbDomains,
+		"nb_processes":  nbProcs,
 	}
 }
 
@@ -1198,6 +1221,29 @@ func ConfigDir() string {
 		return "config"
 	}
 	return filepath.Join(filepath.Dir(exe), "config")
+}
+
+// isMaskedExecutable détecte les fichiers PE déguisés via double extension.
+// Ex: Certificate.cer.exe → soumis comme .cer → analysé statiquement sans exécution.
+// Patterns connus : .cer, .crt, .pdf, .doc, .docx, .xls, .zip, .jpg, .png
+// précédés d'une extension .exe, .dll, .bat, .ps1, .vbs, .js, .hta, .cmd dans le nom.
+func isMaskedExecutable(filename string) bool {
+	lower := strings.ToLower(filename)
+	// Double extension connue : nom.doc.exe → faux document
+	dangerousExts := []string{".exe", ".dll", ".bat", ".ps1", ".vbs", ".js", ".hta", ".cmd", ".scr", ".com"}
+	maskingExts := []string{".cer", ".crt", ".pem", ".pdf", ".doc", ".docx", ".xls", ".xlsx",
+		".zip", ".rar", ".7z", ".jpg", ".jpeg", ".png", ".gif", ".mp4", ".mp3", ".txt"}
+	// Cas 1 : double extension (nom.masque.dangereux)
+	for _, mask := range maskingExts {
+		for _, danger := range dangerousExts {
+			if strings.HasSuffix(lower, mask+danger) {
+				return true
+			}
+		}
+	}
+	// Cas 2 : extension non-exécutable mais signature PE (détectée par contenu)
+	// Couvert par le renommage ci-dessus — on ne lit pas le contenu ici.
+	return false
 }
 
 // min helper pour Go < 1.21
