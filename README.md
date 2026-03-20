@@ -1,4 +1,4 @@
-# RF Sandbox Analyser — Go Edition v3.0.0
+# RF Sandbox Analyser — Go Edition v3.1.0
 
 Outil **100% Go** pour soumettre des fichiers/URLs à la **Recorded Future Sandbox API**,
 analyser les résultats et générer des rapports PDF professionnels de cybersécurité via
@@ -53,7 +53,7 @@ Fichier / URL malveillant
 6. [Pipeline bi-modèle en chaîne](#6-pipeline-bi-modèle-en-chaîne)
 7. [Rapports générés](#7-rapports-générés)
 8. [Base de connaissances SQLite](#8-base-de-connaissances-sqlite)
-9. [Entraînement IA — Foundation-Sec-8B](#9-entraînement-ia--foundation-sec-8b)
+9. [Entraînement IA — Foundation-Sec-8B & Llama 3.1 8B](#9-entraînement-ia--foundation-sec-8b--llama-31-8b)
 10. [Enrichissement externe](#10-enrichissement-externe)
 11. [Audit de sécurité](#11-audit-de-sécurité)
 12. [Vault — chiffrement des secrets](#12-vault--chiffrement-des-secrets)
@@ -61,6 +61,7 @@ Fichier / URL malveillant
 14. [Configuration](#14-configuration)
 15. [Endpoints RF Sandbox API](#15-endpoints-rf-sandbox-api)
 16. [Dépendances Go](#16-dépendances-go)
+17. [Confidentialité et isolation réseau](#confidentialité-et-isolation-réseau)
 
 ---
 
@@ -253,26 +254,74 @@ Le badge moteur est visible dès le **préchauffage parallèle** (avant même le
 
 ## 5. Moteurs IA — catalogue complet
 
-Tous les modèles s'exécutent **localement via llama.cpp** — port 18081, localhost uniquement.
+> ⚠️ **Confidentialité totale** — Tous les modèles s'exécutent **exclusivement en local**
+> via `llama-server` (llama.cpp) sur `localhost:18081`. **Aucune donnée n'est envoyée
+> à un service cloud, API externe ou tiers.** Les fichiers analysés, résultats RF Sandbox
+> et rapports générés ne quittent jamais la machine.
 
 ### Catalogue
 
-| Modèle | VRAM | Taille | Spécialité | Licence |
-|---|---|---|---|---|
-| **Foundation-Sec-8B** (Cisco) ⭐ | 6 Go | 4,9 Go | Cyber natif — CVEs, CTI, exploits. **Priorité max. Fine-tunable.** | Apache 2.0 |
-| **Qwen 2.5 14B Instruct** | 10 Go | 8,7 Go | Généraliste — meilleur JSON structuré, contexte 32k | Apache 2.0 |
-| **Primus 8B** (Trend Micro) | 6 Go | 4,0 Go | CTI/forensic — 10B+ tokens cybersécurité Trend Micro | Llama 3 |
-| **Granite 8B Code** (IBM) | 6 Go | 4,9 Go | Analyse de code — scripts obfusqués (PS1, JS, VBA) | Apache 2.0 |
-| **Mistral 7B Instruct v0.2** | 6 Go | 4,1 Go | Généraliste léger — fallback, bon rapport qualité/vitesse | Apache 2.0 |
+| # | Modèle | VRAM | Taille | Spécialité | Fine-tunable | Licence |
+|---|---|---|---|---|---|---|
+| 1 | **Foundation-Sec-8B** (Cisco) ⭐ | 6 Go | 4,9 Go | Cyber natif — CVEs, CTI, exploits | ✅ LoRA/QLoRA | Apache 2.0 |
+| 2 | **Llama 3.1 8B Instruct** (Meta) 🆕 | 6 Go | 4,9 Go | Base forensic — contexte 128k, architecture LLaMA 3.1 | ✅ LoRA/QLoRA | Llama 3.1 Community |
+| 3 | **Qwen 2.5 14B Instruct** | 10 Go | 8,7 Go | Généraliste — meilleur JSON structuré, contexte 32k | ❌ GGUF only | Apache 2.0 |
+| 4 | **Primus 8B** (Trend Micro) | 6 Go | 4,0 Go | CTI/forensic — 10B+ tokens cybersécurité Trend Micro | ❌ propriétaire | Llama 3 |
+| 5 | **Granite 8B Code** (IBM) | 6 Go | 4,9 Go | Analyse de code — scripts obfusqués (PS1, JS, VBA) | ❌ GGUF only | Apache 2.0 |
+| 6 | **Mistral 7B Instruct v0.2** | 6 Go | 4,1 Go | Généraliste léger — fallback, bon rapport qualité/vitesse | ❌ GGUF only | Apache 2.0 |
 
-### Sélection automatique
+### Comment le moteur IA est-il choisi ?
 
+La sélection se fait en **trois étapes automatiques** lors de chaque analyse :
+
+**Étape 1 — Préchauffage parallèle**
+Dès la soumission d'un fichier à RF Sandbox, `llama-server` démarre **en arrière-plan**
+avec le meilleur modèle disponible. RF Sandbox prend 1 à 3 min pour analyser —
+le modèle est chargé en VRAM pendant ce temps, prêt à générer immédiatement.
+
+**Étape 2 — Pipeline bi-modèle (prioritaire si ≥ 2 modèles présents)**
 ```
-Foundation-Sec-8B  →  Qwen 2.5 14B  →  Primus 8B  →  Mistral 7B
+M1 (spécialiste cyber)       → extraction technique JSON
+  Foundation-Sec-8B
+  Llama 3.1 8B Instruct (si fine-tuné forensic)
+  Primus 8B
+  Granite 8B Code
+
+M2 (généraliste structuré)   → synthèse rapport complet
+  Qwen 2.5 14B
+  Mistral 7B
 ```
 
-Foundation-Sec-8B est prioritaire car c'est le seul LLM du catalogue entraîné
-en *continued pre-training* sur un corpus cybersécurité curé (pas un simple fine-tuning).
+**Étape 3 — Mono-modèle (fallback si chaîne indisponible)**
+
+Ordre de priorité automatique (le premier fichier `.gguf` valide présent dans `moteur/models/`) :
+```
+1. Foundation-Sec-8B    ← cyber natif, priorité absolue
+2. Llama 3.1 8B         ← base forensic fine-tunable, contexte 128k
+3. Qwen 2.5 14B         ← plus grand, meilleur JSON
+4. Primus 8B            ← cyber Trend Micro
+5. Mistral 7B           ← fallback généraliste
+```
+
+Le modèle configuré manuellement dans `config.json` (`ai_model`) est utilisé **uniquement
+s'il est présent et valide sur disque** — sinon le meilleur disponible prend le relais
+automatiquement.
+
+### Préchauffage parallèle
+
+Dès la soumission d'un fichier, `llama-server` démarre **en parallèle** de l'analyse
+RF Sandbox. Quand RF retourne ses résultats (1-3 min), le modèle est déjà chargé
+en VRAM — gain de 30-60 secondes.
+
+### Paramètres d'inférence
+
+| Paramètre | Valeur |
+|---|---|
+| Temperature | 0,1 (JSON déterministe) |
+| Repeat penalty | 1,1 |
+| GPU layers | 99 (tout sur VRAM si disponible) |
+| Context window | 32 768 tokens (GPU ≥ 6 Go) / 128 000 (Llama 3.1) |
+| Max output | 8 192 – 16 384 tokens |
 
 ### Préchauffage parallèle
 
@@ -334,8 +383,11 @@ Données RF + MITRE + AbuseIPDB
 
 | Rôle | Priorité |
 |---|---|
-| M1 (extraction technique) | Foundation-Sec-8B → Primus 8B → Granite 8B |
+| M1 (extraction technique) | Foundation-Sec-8B → **Llama 3.1 8B** → Primus 8B → Granite 8B |
 | M2 (synthèse rapport) | Qwen 2.5 14B → Mistral 7B |
+
+> Llama 3.1 8B Instruct est maintenant candidat M1 (spécialiste cyber secondaire) grâce à
+> son architecture LLaMA 3.1 et sa capacité à être fine-tuné sur le dataset forensic local.
 
 ### Gains estimés vs mono-modèle
 
@@ -429,41 +481,50 @@ Les 3 analyses les plus proches sont injectées dans le prompt si l'option est a
 
 ---
 
-## 9. Entraînement IA — Foundation-Sec-8B
+## 9. Entraînement IA — Foundation-Sec-8B & Llama 3.1 8B
 
-Fine-tuning LoRA de Foundation-Sec-8B (Cisco, Apache 2.0) sur vos propres analyses.
-**100% Go, zéro Python, zéro PyTorch** — utilise `llama-finetune.exe` natif.
+Fine-tuning LoRA de **Foundation-Sec-8B** (Cisco) ou **Meta Llama 3.1 8B Instruct** sur vos
+propres analyses forensics. **100% Go, zéro Python, zéro PyTorch** — utilise `llama-finetune`
+natif de llama.cpp.
 
-### Pourquoi Foundation-Sec-8B uniquement
+### Modèles fine-tunables
 
-Foundation-Sec-8B est le **seul modèle fine-tunable** du projet :
-- Architecture LLaMA 3.1 8B ouverte, non propriétaire
-- Cisco a publié les poids FP16 (nécessaires pour le fine-tuning)
-- Licence Apache 2.0 — redistribution et modification autorisées
+| Modèle | Template | Sortie fine-tunée |
+|---|---|---|
+| **Foundation-Sec-8B** ⭐ | LLaMA 3.1 Chat | `Foundation-Sec-8B-forensic-fr-Q4_K_M.gguf` |
+| **Llama 3.1 8B Instruct** 🆕 | LLaMA 3.1 Chat | `Llama-3.1-8B-forensic-fr-Q4_K_M.gguf` |
+
+Les deux modèles utilisent le **même template LLaMA 3.1 Chat** et le même dataset.
+Llama 3.1 8B offre un **contexte 128k tokens** — idéal pour les rapports forensics volumineux.
 
 Les autres modèles ne peuvent pas être fine-tunés localement :
-- Qwen 14B / Mistral 7B — GGUF quantifié 4-bit (pas de poids FP16 utilisables)
+- Qwen 14B / Mistral 7B — GGUF quantifié 4-bit (poids FP16 non disponibles)
 - Primus 8B — modèle propriétaire Trend Micro (poids fusionnés non redistribuables)
+- Granite 8B — GGUF uniquement, architecture non compatible llama-finetune
 
 ### Pipeline
 
+Le trainer détecte automatiquement le modèle présent dans `moteur/models/` :
+
 ```
 1. Export dataset
-   analyses.db → training_dataset.jsonl (format Alpaca enrichi RF+MITRE+AbuseIPDB)
-              → training_dataset.txt    (format LLaMA 3.1 Chat Template)
+   analyses.db → training_dataset.jsonl  (format Alpaca enrichi RF+MITRE+AbuseIPDB)
+              → training_dataset.txt     (format LLaMA 3.1 Chat Template, commun aux deux)
 
 2. Détection matériel
    nvidia-smi → profil GPU (threads, batch, ctx)
 
-3. Vérification binaires
-   llama-finetune.exe (build b4109) / llama-quantize.exe
+3. Détection modèle de base
+   Foundation-Sec-8B présent → template LLaMA 3.1 Chat + sortie Foundation-Sec-8B-forensic-fr
+   Llama 3.1 8B présent      → template LLaMA 3.1 Chat + sortie Llama-3.1-8B-forensic-fr
+   autre                     → template Mistral (mode dégradé, non recommandé)
 
 4. Fine-tuning LoRA
-   Base  : Foundation-Sec-8B-Instruct-Q4_K_M.gguf
-   Sortie: moteur/lora/Foundation-Sec-8B-forensic-fr-lora.bin
+   Base  : Foundation-Sec-8B-Instruct-Q4_K_M.gguf  OU  Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf
+   Sortie: moteur/lora/<modèle>-forensic-fr-lora.bin
 
 5. Quantification Q4_K_M
-   Sortie: moteur/lora/Foundation-Sec-8B-forensic-fr-Q4_K_M.gguf
+   Sortie: moteur/lora/<modèle>-forensic-fr-Q4_K_M.gguf
 ```
 
 ### Format d'entraînement — LLaMA 3.1 Chat Template
@@ -686,6 +747,52 @@ make linux      # Cross-compilation Linux
 | `github.com/Azure/go-ntlmssp` | v0.0.0-... | Authentification NTLM proxy d'entreprise |
 | `github.com/joho/godotenv` | v1.5.1 | Chargement `.env` |
 | `modernc.org/sqlite` | v1.46.1 | Base de connaissances SQLite (pur Go, sans CGO) |
+
+---
+
+## Confidentialité et isolation réseau
+
+### Moteur IA — 100% local, zéro fuite de données
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  ISOLATION TOTALE DU MOTEUR IA                              │
+│                                                             │
+│  llama-server écoute sur : localhost:18081                  │
+│  Interface web écoute sur : localhost:8766                  │
+│                                                             │
+│  ✅ Fichiers analysés     → ne quittent JAMAIS la machine  │
+│  ✅ Résultats RF Sandbox  → traités localement uniquement  │
+│  ✅ Prompts IA            → envoyés uniquement à localhost  │
+│  ✅ Rapports PDF générés  → stockés dans reporting/        │
+│  ✅ Base de connaissances → SQLite locale (knowledge/)     │
+│                                                             │
+│  Aucune donnée n'est transmise à un LLM cloud             │
+│  (pas d'OpenAI, Anthropic, Mistral API, Ollama cloud...)   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Appels réseau sortants (optionnels, activables/désactivables)
+
+| Service | Usage | Activation | Données transmises |
+|---|---|---|---|
+| **Recorded Future Sandbox API** | Soumission fichiers/URLs | Token API requis | Fichier/URL soumis uniquement |
+| **MITRE ATT&CK** (GitHub raw) | Enrichissement TTPs | Toggle UI | IDs de techniques (ex: T1059) |
+| **AbuseIPDB** | Réputation IP | Clé API + toggle UI | Adresses IP publiques des IOCs |
+| **ip-api.com** | Géolocalisation IP | Toggle UI (off par défaut) | Adresses IP publiques des IOCs |
+| **HuggingFace** | Téléchargement modèles | Bouton UI | Aucune (téléchargement HTTP) |
+
+Tous ces appels sont **optionnels**, **désactivables depuis l'interface**, et ne transmettent
+jamais le contenu des fichiers analysés ni les rapports générés.
+
+### Réseau interne uniquement
+
+```
+Machine locale
+    ├── localhost:8766   → Interface web RF Sandbox
+    ├── localhost:18081  → llama-server (moteur IA)
+    └── config/.vault.key → Secrets chiffrés AES-256
+```
 
 ---
 

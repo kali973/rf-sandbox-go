@@ -2122,6 +2122,8 @@ func makeModelDownloadHandler(cfg ServerConfig) http.HandlerFunc {
 				ai.EnsureFallbackModel(progressFn)
 			case ai.GraniteCodeModel:
 				ai.EnsureGraniteCodeModel(progressFn)
+			case ai.LlamaForensicModel:
+				ai.EnsureLlamaForensicModel(progressFn)
 			default:
 				// Modèle du catalogue avec DownloadURL — téléchargement générique
 				if info.DownloadURL != "" {

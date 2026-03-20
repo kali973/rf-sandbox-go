@@ -101,7 +101,7 @@ func main() {
 
 	// Conversion JSONL → texte brut pour llama-finetune
 	datasetTXT := strings.TrimSuffix(datasetJSONL, ".jsonl") + ".txt"
-	if err := convertJSONLtoTXT(datasetJSONL, datasetTXT, isFoundationSec); err != nil {
+	if err := convertJSONLtoTXT(datasetJSONL, datasetTXT, isLlamaFamily); err != nil {
 		fatal("Conversion dataset : " + err.Error())
 	}
 	log.Printf("  ✓ Converti → %s", datasetTXT)
@@ -127,21 +127,37 @@ func main() {
 	if baseModel == "" {
 		fatal("Aucun modèle .gguf dans moteur/models/ — téléchargez Foundation-Sec-8B depuis l'interface")
 	}
+	// Détection du type de modèle pour adapter le template de fine-tuning
+	// LLaMA 3.1 Chat template : Foundation-Sec-8B, Llama 3.1 8B Instruct
+	// Mistral template        : Mistral 7B et autres
 	isFoundationSec := strings.Contains(baseModel, "Foundation-Sec")
+	isLlama31 := strings.Contains(baseModel, "Llama-3.1") || strings.Contains(baseModel, "Meta-Llama-3.1")
+	isLlamaFamily := isFoundationSec || isLlama31 // les deux utilisent LLaMA 3.1 Chat template
+
 	log.Printf("  ✓ Modèle de base : %s", modelName)
-	if isFoundationSec {
+	switch {
+	case isFoundationSec:
 		log.Println("  ✓ Foundation-Sec-8B sélectionné — template LLaMA 3.1 Chat activé")
-	} else {
-		log.Println("  ⚠ Mistral sélectionné — installez Foundation-Sec-8B pour de meilleurs résultats")
+		log.Println("  ✓ Optimisé cybersécurité — fine-tuning forensic haute précision")
+	case isLlama31:
+		log.Println("  ✓ Meta Llama 3.1 8B sélectionné — template LLaMA 3.1 Chat activé")
+		log.Println("  ✓ Contexte 128k — idéal pour rapports forensics volumineux")
+	default:
+		log.Println("  ⚠ Modèle généraliste — installez Foundation-Sec-8B ou Llama 3.1 pour de meilleurs résultats")
 	}
 
 	// Nom du fichier de sortie adapté au modèle fine-tuné
 	loraBaseName := "forensic-fr-lora.bin"
 	ggufOutName := "mistral-7b-forensic-fr-Q4_K_M.gguf"
-	if isFoundationSec {
+	switch {
+	case isFoundationSec:
 		loraBaseName = "foundation-sec-forensic-fr-lora.bin"
 		ggufOutName = "Foundation-Sec-8B-forensic-fr-Q4_K_M.gguf"
+	case isLlama31:
+		loraBaseName = "llama31-forensic-fr-lora.bin"
+		ggufOutName = "Llama-3.1-8B-forensic-fr-Q4_K_M.gguf"
 	}
+	_ = isLlamaFamily // utilisé pour le template ci-dessous
 	loraOut := filepath.Join(mDir, "lora", loraBaseName)
 	os.MkdirAll(filepath.Dir(loraOut), 0755)
 	log.Printf("  ✓ Sortie LoRA : %s", loraOut)

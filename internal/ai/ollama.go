@@ -33,6 +33,7 @@ const (
 	PrimusModel        = "Llama-Primus-8B-Q3_K_M.gguf"            // Trend Micro Primus 8B — spécialisé cybersécurité/CTI
 	FoundationSecModel = "Foundation-Sec-8B-Instruct-Q4_K_M.gguf" // Cisco Foundation-Sec-8B — cybersécurité, fine-tunable
 	GraniteCodeModel   = "granite-8b-code-instruct-Q4_K_M.gguf"   // IBM Granite 8B Code — analyse de code malveillant statique
+	LlamaForensicModel = "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf" // Meta Llama 3.1 8B — base forensic fine-tunable (contexte 128k)
 	startupTimeout     = 120 * time.Second
 	httpTimeout        = 10 * time.Second // pour health checks uniquement
 	genTimeout         = 0                // sans limite pour la génération IA (prompt ~20k tokens)
@@ -66,6 +67,12 @@ const (
 	// Seul modèle du projet entraînable localement via Unsloth QLoRA sur le dataset analyses.db
 	// Source : fdtn-ai/Foundation-Sec-8B-Instruct + mradermacher/Foundation-Sec-8B-Instruct-GGUF
 	foundationSecGGUFURL = "https://huggingface.co/mradermacher/Foundation-Sec-8B-Instruct-GGUF/resolve/main/Foundation-Sec-8B-Instruct.Q4_K_M.gguf"
+
+	// Meta Llama 3.1 8B Instruct Q4_K_M — base forensic idéale pour fine-tuning
+	// Contexte 128k tokens, architecture LLaMA 3.1 (même base que Foundation-Sec et ForensicLLM)
+	// Licence : Llama 3.1 Community License (usage commercial autorisé)
+	// Source : bartowski/Meta-Llama-3.1-8B-Instruct-GGUF
+	llamaForensicGGUFURL = "https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/resolve/main/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"
 
 	// IBM Granite 8B Code Instruct Q4_K_M — IBM Research (Apache 2.0)
 	// Spécialisé analyse de code — excellent pour décompilation, détection patterns malveillants,
@@ -150,6 +157,17 @@ var KnownModels = map[string]ModelInfo{
 		DownloadURL: graniteCodeGGUFURL,
 		SourceURL:   "https://huggingface.co/ibm-granite/granite-8b-code-instruct-4k",
 		Specialty:   "code-analysis",
+		Gated:       false,
+	},
+	LlamaForensicModel: {
+		Filename:    LlamaForensicModel,
+		DisplayName: "Meta Llama 3.1 8B Instruct (base forensic)",
+		Description: "Meta Llama 3.1 8B — architecture identique à Foundation-Sec et ForensicLLM (LLaMA 3.1). Contexte 128k tokens. Base idéale pour fine-tuning forensic local via LoRA/QLoRA sur le dataset analyses.db. Excellent équilibre qualité/vitesse sur RTX 3060+. Llama 3.1 Community License.",
+		VRAMMinGB:   6,
+		SizeGB:      4.9,
+		DownloadURL: llamaForensicGGUFURL,
+		SourceURL:   "https://huggingface.co/bartowski/Meta-Llama-3.1-8B-Instruct-GGUF",
+		Specialty:   "forensic",
 		Gated:       false,
 	},
 }
@@ -1677,6 +1695,7 @@ func SelectBestModel() string {
 	// Note: GraniteCodeModel exclu ici — utilisé en M1 pipeline chaîné uniquement.
 	priority := []string{
 		FoundationSecModel, // Cisco cyber LLM, fine-tunable — priorité max si présent
+		LlamaForensicModel, // Meta Llama 3.1 8B — base forensic fine-tunable, contexte 128k
 		FallbackModel,      // Qwen 14B — plus grand, meilleur JSON structuré
 		PrimusModel,        // Trend Micro cyber
 		DefaultModel,       // Mistral 7B — fallback généraliste
@@ -1748,7 +1767,7 @@ func SelectChainModels() (m1, m2 string) {
 	_, _, _, vramFree := detectGPUDetails()
 
 	// M1 : priorité aux spécialistes cyber
-	cyberModels := []string{FoundationSecModel, PrimusModel, GraniteCodeModel}
+	cyberModels := []string{FoundationSecModel, LlamaForensicModel, PrimusModel, GraniteCodeModel}
 	for _, m := range cyberModels {
 		if modelPresent(mDir, m) {
 			m1 = m
@@ -1776,7 +1795,7 @@ func SelectChainModels() (m1, m2 string) {
 
 	// Fallback : si M2 toujours vide, essayer n'importe quel modèle ≠ M1
 	if m2 == "" {
-		for _, m := range []string{FallbackModel, DefaultModel, PrimusModel, FoundationSecModel} {
+		for _, m := range []string{FallbackModel, DefaultModel, PrimusModel, FoundationSecModel, LlamaForensicModel} {
 			if modelPresent(mDir, m) && m != m1 {
 				m2 = m
 				break
@@ -1794,6 +1813,33 @@ func SelectChainModels() (m1, m2 string) {
 func ChainAvailable() bool {
 	m1, m2 := SelectChainModels()
 	return m1 != "" && m2 != ""
+}
+
+// LlamaForensicModelPresent indique si Meta Llama 3.1 8B est disponible.
+func LlamaForensicModelPresent() bool {
+	return modelPresent(moteurDir(), LlamaForensicModel)
+}
+
+// EnsureLlamaForensicModel télécharge Meta Llama 3.1 8B Instruct Q4_K_M.
+// Architecture LLaMA 3.1 — même base que Foundation-Sec et ForensicLLM.
+// Contexte 128k tokens. Fine-tunable localement via LoRA/QLoRA.
+func EnsureLlamaForensicModel(progressFn func(string)) {
+	mDir := moteurDir()
+	if modelPresent(mDir, LlamaForensicModel) {
+		progressFn(logOK("AI-LLAMA31", fmt.Sprintf("Llama 3.1 8B déjà présent : %s", LlamaForensicModel)))
+		return
+	}
+	progressFn(logInfo("AI-LLAMA31", "Téléchargement Meta Llama 3.1 8B Instruct Q4_K_M (~4.9 Go)..."))
+	progressFn(logInfo("AI-LLAMA31", "Source : bartowski/Meta-Llama-3.1-8B-Instruct-GGUF"))
+	progressFn(logInfo("AI-LLAMA31", "Contexte 128k | Fine-tunable LoRA | Llama 3.1 Community License"))
+	dest := modelPath(mDir, LlamaForensicModel)
+	if err := downloadResumable(llamaForensicGGUFURL, dest, progressFn); err != nil {
+		progressFn(logErr("AI-LLAMA31", fmt.Sprintf("Téléchargement Llama 3.1 8B échoué: %v", err)))
+		return
+	}
+	progressFn(logOK("AI-LLAMA31", fmt.Sprintf("Llama 3.1 8B téléchargé → moteur/models/%s", LlamaForensicModel)))
+	progressFn(logOK("AI-LLAMA31", "Modèle prêt — fine-tuning forensic disponible via le trainer intégré"))
+	progressFn(logOK("AI-LLAMA31", "Template : LLaMA 3.1 Chat — même architecture que Foundation-Sec"))
 }
 
 // GraniteCodeModelPresent indique si IBM Granite 8B Code est disponible.
