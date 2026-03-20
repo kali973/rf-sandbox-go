@@ -49,6 +49,44 @@ type IPReputation struct {
 
 // ─── Client d'enrichissement ──────────────────────────────────────────────────
 
+// ─── Cache in-memory (durée de vie = session Go process) ─────────────────────
+// Thread-safe via sync.RWMutex. Évite de re-fetcher MITRE/AbuseIPDB
+// pour des TTPs/IPs déjà enrichis dans la même analyse ou session.
+
+var (
+	mitreCacheMu sync.RWMutex
+	mitreCache   = make(map[string]MitreTechniqueDetail) // clé: TTP ID (ex: "T1059")
+
+	abuseCacheMu sync.RWMutex
+	abuseCache   = make(map[string]IPReputation) // clé: adresse IP
+)
+
+func getMitreCache(id string) (MitreTechniqueDetail, bool) {
+	mitreCacheMu.RLock()
+	defer mitreCacheMu.RUnlock()
+	v, ok := mitreCache[id]
+	return v, ok
+}
+
+func setMitreCache(id string, detail MitreTechniqueDetail) {
+	mitreCacheMu.Lock()
+	mitreCache[id] = detail
+	mitreCacheMu.Unlock()
+}
+
+func getAbuseCache(ip string) (IPReputation, bool) {
+	abuseCacheMu.RLock()
+	defer abuseCacheMu.RUnlock()
+	v, ok := abuseCache[ip]
+	return v, ok
+}
+
+func setAbuseCache(ip string, rep IPReputation) {
+	abuseCacheMu.Lock()
+	abuseCache[ip] = rep
+	abuseCacheMu.Unlock()
+}
+
 type EnrichClient struct {
 	http         *http.Client
 	abuseIPDBKey string // cle API AbuseIPDB (optionnel)
@@ -64,6 +102,9 @@ func NewEnrichClient(abuseIPDBKey string) *EnrichClient {
 // Enrich recupere les donnees d'enrichissement pour une liste de TTPs et d'IPs.
 // Les erreurs sont non-fatales : si une API est indisponible, on continue sans.
 // MITRE et AbuseIPDB sont interrogés en parallèle pour réduire la latence.
+// Enrich interroge MITRE ATT&CK et AbuseIPDB en parallèle avec un timeout global de 45s.
+// Timeout par appel individuel : 10s (configuré sur e.http).
+// Timeout global : 45s — au-delà, les enrichissements partiels sont retournés.
 func (e *EnrichClient) Enrich(ttpIDs []string, ips []string, progressFn func(string)) *EnrichmentData {
 	data := &EnrichmentData{
 		MitreTechniques: make(map[string]MitreTechniqueDetail),
@@ -74,6 +115,14 @@ func (e *EnrichClient) Enrich(ttpIDs []string, ips []string, progressFn func(str
 
 	var wg sync.WaitGroup
 	var mu sync.Mutex
+
+	// Timeout global : 45s pour l'ensemble de l'enrichissement
+	// Les goroutines individuelles ont déjà timeout=10s via e.http
+	enrichDone := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(enrichDone)
+	}()
 
 	// ── MITRE ATT&CK (parallèle, max 5 concurrent) ───────────────────────
 	if len(ttpIDs) > 0 {
@@ -129,7 +178,13 @@ func (e *EnrichClient) Enrich(ttpIDs []string, ips []string, progressFn func(str
 		progressFn("[ENRICH] AbuseIPDB: aucune clé API configurée — enrichissement IP ignoré")
 	}
 
-	wg.Wait()
+	// Attendre la fin ou le timeout global
+	select {
+	case <-enrichDone:
+		// Tous les enrichissements terminés dans les temps
+	case <-time.After(45 * time.Second):
+		progressFn("[ENRICH] ⚠ Timeout global 45s — enrichissements partiels retournés")
+	}
 	return data
 }
 
@@ -138,6 +193,10 @@ func (e *EnrichClient) Enrich(ttpIDs []string, ips []string, progressFn func(str
 // fetchMitreTechnique interroge l'API MITRE ATT&CK (TAXII/STIX) pour un TTP.
 // API publique, sans authentification.
 func (e *EnrichClient) fetchMitreTechnique(ttpID string) (MitreTechniqueDetail, error) {
+	// Vérifier le cache in-memory avant tout appel HTTP
+	if cached, ok := getMitreCache(ttpID); ok {
+		return cached, nil
+	}
 	// Normaliser l'ID : T1059.007 -> T1059/007 pour l'URL
 	// L'API MITRE accepte le format avec point directement via le endpoint de recherche
 	url := fmt.Sprintf("https://attack.mitre.org/techniques/%s/", strings.ReplaceAll(ttpID, ".", "/"))
@@ -155,7 +214,11 @@ func (e *EnrichClient) fetchMitreTechnique(ttpID string) (MitreTechniqueDetail, 
 	_ = taxiiURL
 
 	// Le moyen le plus fiable : GitHub CTI repo (toujours disponible)
-	return e.fetchMitreFromGitHub(ttpID, url)
+	detail, err := e.fetchMitreFromGitHub(ttpID, url)
+	if err == nil {
+		setMitreCache(ttpID, detail) // mémoriser pour éviter re-fetch
+	}
+	return detail, err
 }
 
 func (e *EnrichClient) fetchMitreFromGitHub(ttpID, _ string) (MitreTechniqueDetail, error) {
@@ -291,6 +354,10 @@ var abuseCategories = map[int]string{
 }
 
 func (e *EnrichClient) fetchIPReputation(ip string) (IPReputation, error) {
+	// Cache in-memory — évite re-fetch pour la même IP dans la même session
+	if cached, ok := getAbuseCache(ip); ok {
+		return cached, nil
+	}
 	url := fmt.Sprintf("https://api.abuseipdb.com/api/v2/check?ipAddress=%s&maxAgeInDays=90&verbose", ip)
 
 	req, _ := http.NewRequest("GET", url, nil)
@@ -340,7 +407,7 @@ func (e *EnrichClient) fetchIPReputation(ip string) (IPReputation, error) {
 		cats = append(cats, c)
 	}
 
-	return IPReputation{
+	rep := IPReputation{
 		IP:             d.IPAddress,
 		Score:          d.AbuseConfidenceScore,
 		Pays:           countryName(d.CountryCode),
@@ -348,7 +415,9 @@ func (e *EnrichClient) fetchIPReputation(ip string) (IPReputation, error) {
 		Categories:     cats,
 		TotalReports:   d.TotalReports,
 		EstMalveillant: d.AbuseConfidenceScore >= 25 || d.TotalReports >= 5,
-	}, nil
+	}
+	setAbuseCache(ip, rep) // mémoriser pour éviter re-fetch
+	return rep, nil
 }
 
 // ─── FormatEnrichment : injecteur dans le prompt ─────────────────────────────

@@ -70,8 +70,11 @@ const (
 	// IBM Granite 8B Code Instruct Q4_K_M — IBM Research (Apache 2.0)
 	// Spécialisé analyse de code — excellent pour décompilation, détection patterns malveillants,
 	// analyse de scripts obfusqués (PowerShell, JavaScript, VBA). Complémentaire à Foundation-Sec.
-	// Source : ibm-granite/granite-8b-code-instruct-4k + bartowski/granite-8b-code-instruct-4k-GGUF
-	graniteCodeGGUFURL = "https://huggingface.co/bartowski/granite-8b-code-instruct-4k-GGUF/resolve/main/granite-8b-code-instruct-4k-Q4_K_M.gguf"
+	// IBM Granite URLs — bartowski/granite-8b-code-instruct-4k-GGUF → 404 (repo supprimé)
+	// On essaie plusieurs sources dans EnsureGraniteCodeModel()
+	graniteCodeGGUFURL       = "https://huggingface.co/ibm-granite/granite-8b-code-instruct-4k/resolve/main/granite-8b-code-instruct-4k-Q4_K_M.gguf"
+	graniteCodeGGUFFallback1 = "https://huggingface.co/bartowski/ibm-granite-8b-code-instruct-4k-GGUF/resolve/main/ibm-granite-8b-code-instruct-4k-Q4_K_M.gguf"
+	graniteCodeGGUFFallback2 = "https://huggingface.co/bartowski/ibm-granite-3.1-8b-instruct-GGUF/resolve/main/ibm-granite-3.1-8b-instruct-Q4_K_M.gguf"
 )
 
 // ─── Catalogue des modèles connus ────────────────────────────────────────────
@@ -319,7 +322,10 @@ func modelPath(mDir, modelName string) string {
 func modelPresent(mDir, modelName string) bool {
 	p := modelPath(mDir, modelName)
 	info, err := os.Stat(p)
-	return err == nil && info.Size() > 100*1024*1024
+	if err != nil || info.Size() < 100*1024*1024 {
+		return false
+	}
+	return isValidGGUF(p)
 }
 
 // ─── Verifications ────────────────────────────────────────────────────────────
@@ -513,6 +519,12 @@ func isPortInUse(port string) bool {
 
 // killLlamaServer tue tout processus llama-server en cours d'exécution.
 func killLlamaServer() {
+}
+
+// KillLlamaServer est la version exportée de killLlamaServer.
+// Utilisée par le handler /api/cancel pour arrêter une génération en cours.
+func KillLlamaServer() {
+	killLlamaServer()
 	if runtime.GOOS == "windows" {
 		exec.Command("taskkill", "/F", "/IM", "llama-server.exe").Run()
 	} else {
@@ -1389,6 +1401,7 @@ func (c *Client) Generate(prompt string, progressFn func(string)) (string, error
 		return "", err
 	}
 
+	httpStart := time.Now()
 	resp, err := c.httpGen.Post(c.baseURL+"/v1/chat/completions", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return "", fmt.Errorf("appel llama-server: %w", err)
@@ -1422,8 +1435,22 @@ func (c *Client) Generate(prompt string, progressFn func(string)) (string, error
 	}
 
 	response := strings.TrimSpace(result.Choices[0].Message.Content)
+	httpElapsed := time.Since(httpStart)
+
 	if progressFn != nil {
-		progressFn(logOK("AI", fmt.Sprintf("Génération terminée — %d caractères reçus (modèle: %s)", len(response), c.model)))
+		// Estimation tokens/s : 1 token ≈ 3.5 chars (JSON/français)
+		estimToks := float64(len(response)) / 3.5
+		secs := httpElapsed.Seconds()
+		tokPerSec := 0.0
+		if secs > 0 {
+			tokPerSec = estimToks / secs
+		}
+		progressFn(logOK("AI", fmt.Sprintf(
+			"✓ Génération terminée — %d caractères reçus (modèle: %s)",
+			len(response), c.model)))
+		progressFn(cGrey(fmt.Sprintf(
+			"[AI]    ↳ Durée: %s | Vitesse: ~%.1f tok/s | Tokens estimés: ~%d",
+			httpElapsed.Round(time.Second), tokPerSec, int(estimToks))))
 		preview := response
 		if len(preview) > 150 {
 			preview = preview[:150] + "..."
@@ -1619,11 +1646,35 @@ func formatBytes(b int64) string {
 // Priorité : Foundation-Sec-8B (cyber spécialisé + fine-tunable) > Qwen 14B (plus grand) >
 //
 //	Primus 8B (cyber Trend Micro) > Mistral 7B (généraliste)
+//
+// isValidGGUF vérifie que le fichier commence par le magic GGUF (0x47 0x47 0x55 0x46).
+// Détecte les téléchargements incomplets, les fichiers HTML d'erreur, etc.
+func isValidGGUF(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	magic := make([]byte, 4)
+	n, err := f.Read(magic)
+	if err != nil || n < 4 {
+		return false
+	}
+	// GGUF magic: 0x47 0x47 0x55 0x46 ("GGUF")
+	if magic[0] == 0x47 && magic[1] == 0x47 && magic[2] == 0x55 && magic[3] == 0x46 {
+		return true
+	}
+	// GGML legacy (v1/v2/v3)
+	if magic[0] == 0x67 && magic[1] == 0x6A && magic[2] == 0x74 {
+		return true
+	}
+	return false
+}
+
 func SelectBestModel() string {
 	mDir := moteurDir()
-	// Ordre de priorité explicite — le premier présent sur disque gagne.
-	// Note: GraniteCodeModel exclu ici — il est utilisé en M1 du pipeline chaîné,
-	// pas comme modèle de génération de rapport complet (trop spécialisé code seul).
+	// Ordre de priorité explicite — le premier présent ET valide sur disque gagne.
+	// Note: GraniteCodeModel exclu ici — utilisé en M1 pipeline chaîné uniquement.
 	priority := []string{
 		FoundationSecModel, // Cisco cyber LLM, fine-tunable — priorité max si présent
 		FallbackModel,      // Qwen 14B — plus grand, meilleur JSON structuré
@@ -1631,15 +1682,30 @@ func SelectBestModel() string {
 		DefaultModel,       // Mistral 7B — fallback généraliste
 	}
 	for _, m := range priority {
-		if modelPresent(mDir, m) {
-			return m
+		p := modelPath(mDir, m)
+		info, statErr := os.Stat(p)
+		if statErr != nil {
+			continue // absent
 		}
+		if info.Size() < 100*1024*1024 {
+			log.Printf("[AI] ⚠ %s — taille suspecte (%d Mo), téléchargement incomplet ?", m, info.Size()>>20)
+			continue
+		}
+		if !isValidGGUF(p) {
+			log.Printf("[AI] ✗ %s — magic GGUF invalide, fichier corrompu ou interrompu", m)
+			continue
+		}
+		return m
 	}
-	// Aucun modèle connu — chercher n'importe quel GGUF présent
+	// Aucun modèle connu valide — chercher n'importe quel GGUF valide
 	models := ListAvailableModels()
 	if len(models) > 0 {
 		sort.Slice(models, func(i, j int) bool { return models[i].SizeGB > models[j].SizeGB })
-		return models[0].Filename
+		for _, km := range models {
+			if isValidGGUF(modelPath(mDir, km.Filename)) {
+				return km.Filename
+			}
+		}
 	}
 	return DefaultModel
 }
@@ -1678,6 +1744,9 @@ func IsFineTunable(filename string) bool {
 func SelectChainModels() (m1, m2 string) {
 	mDir := moteurDir()
 
+	// Détecter la VRAM disponible pour choisir M2 adapté
+	_, _, _, vramFree := detectGPUDetails()
+
 	// M1 : priorité aux spécialistes cyber
 	cyberModels := []string{FoundationSecModel, PrimusModel, GraniteCodeModel}
 	for _, m := range cyberModels {
@@ -1688,11 +1757,30 @@ func SelectChainModels() (m1, m2 string) {
 	}
 
 	// M2 : meilleur généraliste structuré, différent de M1
-	generalistModels := []string{FallbackModel, DefaultModel}
+	// Si VRAM < 10 Go : Qwen 14B risque d'être trop grand → utiliser 7B
+	var generalistModels []string
+	if vramFree >= 10.0 {
+		generalistModels = []string{FallbackModel, DefaultModel} // Qwen 14B en priorité
+	} else if vramFree >= 6.0 {
+		generalistModels = []string{DefaultModel, FallbackModel} // Mistral 7B prioritaire
+	} else {
+		// VRAM très serrée : M2 = même modèle que M1 en mode mono
+		generalistModels = []string{DefaultModel}
+	}
 	for _, m := range generalistModels {
 		if modelPresent(mDir, m) && m != m1 {
 			m2 = m
 			break
+		}
+	}
+
+	// Fallback : si M2 toujours vide, essayer n'importe quel modèle ≠ M1
+	if m2 == "" {
+		for _, m := range []string{FallbackModel, DefaultModel, PrimusModel, FoundationSecModel} {
+			if modelPresent(mDir, m) && m != m1 {
+				m2 = m
+				break
+			}
 		}
 	}
 
@@ -1703,7 +1791,6 @@ func SelectChainModels() (m1, m2 string) {
 	return m1, m2
 }
 
-// ChainAvailable indique si au moins 2 modèles distincts sont présents pour une chaîne.
 func ChainAvailable() bool {
 	m1, m2 := SelectChainModels()
 	return m1 != "" && m2 != ""
@@ -1721,13 +1808,38 @@ func EnsureGraniteCodeModel(progressFn func(string)) {
 		progressFn(logOK("AI-GRANITE", "IBM Granite 8B Code déjà présent"))
 		return
 	}
-	progressFn(logInfo("AI-GRANITE", "Téléchargement IBM Granite 8B Code Instruct Q4_K_M (~4.9 Go)..."))
-	progressFn(logInfo("AI-GRANITE", "Source : bartowski/granite-8b-code-instruct-4k-GGUF (IBM Research, Apache 2.0)"))
 	dest := modelPath(mDir, GraniteCodeModel)
-	if err := downloadResumable(graniteCodeGGUFURL, dest, progressFn); err != nil {
-		progressFn(logErr("AI-GRANITE", fmt.Sprintf("Téléchargement Granite échoué: %v", err)))
+
+	// Essayer les URLs dans l'ordre — le repo bartowski original a été supprimé/renommé
+	urls := []struct{ url, label string }{
+		{graniteCodeGGUFURL, "ibm-granite/granite-8b-code-instruct-4k (officiel IBM)"},
+		{graniteCodeGGUFFallback1, "bartowski/ibm-granite-8b-code-instruct-4k-GGUF"},
+		{graniteCodeGGUFFallback2, "bartowski/ibm-granite-3.1-8b-instruct-GGUF (Granite 3.1)"},
+	}
+
+	var lastErr error
+	for _, u := range urls {
+		progressFn(logInfo("AI-GRANITE", fmt.Sprintf("Téléchargement IBM Granite 8B Code (~4.9 Go)...")))
+		progressFn(logInfo("AI-GRANITE", fmt.Sprintf("Source : %s", u.label)))
+		if err := downloadResumable(u.url, dest, progressFn); err != nil {
+			progressFn(logWarn("AI-GRANITE", fmt.Sprintf("✗ Téléchargement Granite échoué: %v — essai URL suivante...", err)))
+			// Supprimer le fichier partiel avant de réessayer
+			os.Remove(dest)
+			lastErr = err
+			continue
+		}
+		// Vérifier magic bytes GGUF
+		if !isValidGGUF(dest) {
+			progressFn(logWarn("AI-GRANITE", "✗ Fichier téléchargé invalide (pas un GGUF) — essai URL suivante..."))
+			os.Remove(dest)
+			continue
+		}
+		progressFn(logOK("AI-GRANITE", fmt.Sprintf("✓ IBM Granite 8B Code téléchargé depuis %s", u.label)))
 		return
 	}
-	progressFn(logOK("AI-GRANITE", fmt.Sprintf("Granite 8B Code téléchargé → moteur/models/%s", GraniteCodeModel)))
-	progressFn(logOK("AI-GRANITE", "Rôle : extraction technique M1 dans le pipeline bi-modèle"))
+
+	// Toutes les URLs ont échoué
+	progressFn(logErr("AI-GRANITE", fmt.Sprintf("✗ Toutes les URLs Granite ont échoué. Dernière erreur : %v", lastErr)))
+	progressFn(logInfo("AI-GRANITE", "→ Téléchargez manuellement depuis : https://huggingface.co/ibm-granite/granite-8b-code-instruct-4k"))
+	progressFn(logInfo("AI-GRANITE", "→ Placez le fichier .gguf dans le dossier moteur/models/"))
 }

@@ -15,6 +15,8 @@
 package main
 
 import (
+	"bufio"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -145,6 +147,39 @@ func main() {
 	log.Printf("  ✓ Sortie LoRA : %s", loraOut)
 
 	// ── 5. Fine-tuning ────────────────────────────────────────────────────────
+	// ── Estimation durée avant lancement ─────────────────────────────────────
+	// Basée sur le profil GPU, le nombre d'exemples et les epochs
+	// Référence : RTX 4060 (8Go) ≈ 2min/exemple/epoch avec r=8 batch=4 ctx=256
+	estSecsPerExamplePerEpoch := 120.0 // valeur de base RTX 4060
+	switch {
+	case p.Batch >= 32: // RTX 3090/4090
+		estSecsPerExamplePerEpoch = 9.0
+	case p.Batch >= 16: // RTX 3080Ti/4080
+		estSecsPerExamplePerEpoch = 18.0
+	case p.Batch >= 8: // RTX 3080/4070
+		estSecsPerExamplePerEpoch = 36.0
+	case p.Batch >= 4: // RTX 3070/4060
+		estSecsPerExamplePerEpoch = 120.0
+	case p.Batch >= 2: // GPU < 6Go
+		estSecsPerExamplePerEpoch = 300.0
+	default: // CPU only
+		estSecsPerExamplePerEpoch = 1200.0
+	}
+	estTotal := time.Duration(estSecsPerExamplePerEpoch*float64(stats.Exported)*float64(cfg.Epochs)) * time.Second
+	estH := int(estTotal.Hours())
+	estM := int(estTotal.Minutes()) % 60
+	if estH > 0 {
+		log.Printf("  ⏱ Durée estimée : ~%dh%02dm  (%d exemples × %d epochs × profil %s)",
+			estH, estM, stats.Exported, cfg.Epochs, p.Name)
+	} else {
+		log.Printf("  ⏱ Durée estimée : ~%dm  (%d exemples × %d epochs × profil %s)",
+			estM, stats.Exported, cfg.Epochs, p.Name)
+	}
+	if !cfg.DryRun {
+		log.Println("  → Lancement dans 5 secondes — Ctrl+C pour annuler")
+		time.Sleep(5 * time.Second)
+	}
+
 	sep(fmt.Sprintf("[5/5] FINE-TUNING (%d epochs, %d exemples)", cfg.Epochs, stats.Exported))
 
 	args := []string{
@@ -529,6 +564,46 @@ func fileSize(path string) int64 {
 func fatal(msg string) {
 	log.Println("  [TRAINING] ✗ " + msg)
 	os.Exit(1)
+}
+
+// validateDatasetIntegrity vérifie que le fichier JSONL est bien formé.
+// Détecte les JSON invalides et les champs instruction/input manquants.
+func validateDatasetIntegrity(jsonlPath string) error {
+	f, err := os.Open(jsonlPath)
+	if err != nil {
+		return fmt.Errorf("impossible d'ouvrir %s : %v", jsonlPath, err)
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 512*1024), 512*1024)
+	lineNum, invalidLines := 0, 0
+	for scanner.Scan() {
+		lineNum++
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var entry map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			invalidLines++
+			if invalidLines <= 3 {
+				log.Printf("  ⚠ L%d JSON invalide: %v", lineNum, err)
+			}
+			continue
+		}
+		for _, field := range []string{"instruction", "input", "output"} {
+			if _, ok := entry[field]; !ok {
+				invalidLines++
+				if invalidLines <= 3 {
+					log.Printf("  ⚠ L%d champ '%s' manquant", lineNum, field)
+				}
+			}
+		}
+	}
+	if invalidLines > 0 {
+		return fmt.Errorf("%d entrée(s) invalide(s) sur %d", invalidLines, lineNum)
+	}
+	return nil
 }
 
 func sep(title string) {

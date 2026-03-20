@@ -236,7 +236,25 @@ func buildTrainingInput(e KnowledgeEntry) string {
 		}
 	}
 
+	// ── IPs contactées (dont infrastructure légitime C2) ───────────────────────
+	if len(e.IPs) > 0 {
+		sb.WriteString(fmt.Sprintf("\nIPS CONTACTEES: %d adresse(s)\n", len(e.IPs)))
+		for i, ip := range e.IPs {
+			if i >= 15 {
+				break
+			}
+			sb.WriteString(fmt.Sprintf("  %s\n", ip))
+		}
+	}
+
 	return sb.String()
+}
+
+func min16(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // min helper pour dataset.go (Go < 1.21 compat)

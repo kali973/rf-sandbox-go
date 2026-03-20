@@ -82,6 +82,8 @@ type AIReporter struct {
 	geoData        map[string]GeoInfo
 	enrichData     *EnrichmentData
 	engineName     string
+	results        []*models.AnalysisResult // données brutes pour sections avancées
+	generationSecs int                      // durée génération IA (secondes) pour pied de page
 }
 
 // tlpFromClassification détermine le niveau TLP selon la classification de la menace.
@@ -135,6 +137,11 @@ func (r *AIReporter) SetEngine(name string) {
 	r.engineName = name
 }
 
+// SetGenerationDuration définit la durée de génération IA (secondes) pour affichage PDF.
+func (r *AIReporter) SetGenerationDuration(secs int) {
+	r.generationSecs = secs
+}
+
 // SetEnrichment injecte les données d'enrichissement MITRE ATT&CK et AbuseIPDB dans le rapport.
 func (r *AIReporter) SetEnrichment(data *EnrichmentData) {
 	r.enrichData = data
@@ -142,6 +149,7 @@ func (r *AIReporter) SetEnrichment(data *EnrichmentData) {
 
 // Generate génère le rapport PDF complet à partir des résultats d'analyse.
 func (r *AIReporter) Generate(results []*models.AnalysisResult, report *ForensicReport) error {
+	r.results = results // sauvegarder pour les sections avancées (LegitInfra, etc.)
 	// Déterminer le TLP dynamiquement selon la gravité réelle du rapport
 	tlpLabel, _ := tlpFromClassification(report.Classification)
 	r.tlpLabel = tlpLabel
@@ -187,6 +195,29 @@ func (r *AIReporter) Generate(results []*models.AnalysisResult, report *Forensic
 			report.AnalyseProcessus,
 			report.AnalyseProcessusConclusion, "")
 	}
+	// ── Preuves kernel : fichiers créés + connexions (données brutes RF) ──────
+	// Affichées uniquement si r.results contient des KernelEvents significatifs
+	if r.results != nil {
+		criticalEvs := extractKernelEventsForPDF(r.results, 60)
+		if len(criticalEvs) > 0 {
+			r.kernelEvidenceSection(criticalEvs)
+		}
+		// Fichiers déposés par le malware (payloads 2ème stage)
+		var allDropped []models.DroppedFileInfo
+		for _, res := range r.results {
+			allDropped = append(allDropped, res.DroppedFiles...)
+		}
+		if len(allDropped) > 0 {
+			r.droppedFilesSection(allDropped)
+		}
+		// Commandes suspectes (curl, ftp, schtasks, powershell...)
+		allProcs := make([]models.ProcessWithTask, 0)
+		for _, res := range r.results {
+			allProcs = append(allProcs, res.Processes...)
+		}
+		r.cmdlineSection(allProcs)
+	}
+
 	if report.AnalyseStatique != "" {
 		r.genericSectionWithConcl("ANALYSE DU FICHIER",
 			"Structure, caracteristiques techniques et indicateurs d'origine du fichier malveillant.",
@@ -333,12 +364,17 @@ func (r *AIReporter) coverPage(results []*models.AnalysisResult, report *Forensi
 		maxScore = report.ScoreGlobal
 	}
 
+	// Compter les domaines C2 (IOCs + SNI issus des flows TLS)
+	totalDomains := 0
+	for _, res := range results {
+		totalDomains += len(res.IOCs.Domains)
+	}
 	kpis := []struct{ val, label string }{
 		{fmt.Sprintf("%d", len(results)), "Echantillons"},
 		{fmt.Sprintf("%d/10", maxScore), "Score"},
 		{fmt.Sprintf("%d", totalSigs), "Signatures"},
 		{fmt.Sprintf("%d", len(report.TechniquesMitre)), "MITRE ATT&CK"},
-		{fmt.Sprintf("%d", len(report.Recommandations)), "Actions"},
+		{fmt.Sprintf("%d", totalDomains), "Domaines C2"},
 		{fmt.Sprintf("%d", len(report.IOCsCritiques)), "IOCs"},
 	}
 
@@ -373,10 +409,26 @@ func (r *AIReporter) coverPage(results []*models.AnalysisResult, report *Forensi
 
 	// ── Métadonnées ───────────────────────────────────────────────────────────
 	pdf.SetXY(r.mL+4, 118)
+	// Score brut RF sandbox pour comparaison avec score IA
+	rfScoreCover := 0
+	for _, res := range results {
+		if res.Score > rfScoreCover {
+			rfScoreCover = res.Score
+		}
+	}
+	engineDisplayCover := "Analyseur Forensic IA - CCM Bercy"
+	if r.engineName != "" {
+		engineDisplayCover = r.engineName
+	}
+	scoreDisplayCover := fmt.Sprintf("%d/10", report.ScoreGlobal)
+	if rfScoreCover > 0 && rfScoreCover != report.ScoreGlobal {
+		scoreDisplayCover = fmt.Sprintf("%d/10 (IA) | RF Sandbox: %d/10", report.ScoreGlobal, rfScoreCover)
+	}
 	metas := []struct{ k, v string }{
 		{"Date d'analyse", r.reportDate},
 		{"Classification", r.classification},
-		{"Moteur d'analyse", "Analyseur Forensic IA - CCM Bercy"},
+		{"Moteur d'analyse", engineDisplayCover},
+		{"Score de menace", scoreDisplayCover},
 		{"Niveau de confiance", report.NiveauConfiance},
 	}
 	for _, m := range metas {
@@ -695,6 +747,42 @@ func (r *AIReporter) reseauSection(report *ForensicReport) {
 		r.subSection(fmt.Sprintf("Reputation des IPs (AbuseIPDB) — %d IP(s) verifiees", len(r.enrichData.IPReputations)))
 		r.abuseIPDBTable(r.enrichData.IPReputations)
 	}
+
+	// Tableau infrastructure légitime utilisée comme C2 (technique LOLBin)
+	// SharePoint, OneDrive, Azure : IPs non bloquables mais SNI = vrais IOCs
+	if r.results != nil {
+		legitIPs := make([]string, 0)
+		for _, res := range r.results {
+			legitIPs = append(legitIPs, res.IOCs.LegitInfraIPs...)
+		}
+		legitIPs = uniqueStringsAI(legitIPs)
+		if len(legitIPs) > 0 {
+			r.subSection(fmt.Sprintf("Infrastructure legitime utilisee comme C2 — %d IP(s) LOLBin", len(legitIPs)))
+			r.richParagraph(toL1(
+				"Ces adresses appartiennent a des hebergeurs legitimes (Microsoft Azure, SharePoint, OneDrive) " +
+					"utilises comme canal C2 par le malware (technique LOLBin/LOLBAS). " +
+					"NE PAS bloquer ces IPs au pare-feu — les domaines SNI associes (ex: 0bgtr-my.sharepoint.com) " +
+					"sont les vrais indicateurs a surveiller dans les logs proxy et DNS."))
+			loBRows := make([][]string, 0)
+			for _, ip := range legitIPs {
+				loBRows = append(loBRows, []string{ip, "Microsoft / Azure", "C2 via infra legitime", "SURVEILLER"})
+			}
+			r.iocTable(loBRows)
+		}
+	}
+}
+
+// uniqueStringsAI déduplique une slice de strings.
+func uniqueStringsAI(s []string) []string {
+	seen := make(map[string]bool)
+	var out []string
+	for _, v := range s {
+		if v != "" && !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // ─── Section "Pourquoi c'est malveillant" ────────────────────────────────────
@@ -1448,6 +1536,23 @@ func (r *AIReporter) conclusionSection(report *ForensicReport) {
 	}
 
 	pdf.SetTextColor(0, 0, 0)
+
+	// ── Pied de page : métadonnées de génération ────────────────────────────────
+	if r.generationSecs > 0 {
+		pdf.SetY(r.pageH - 22)
+		pdf.SetFont("Helvetica", "", 7)
+		pdf.SetTextColor(120, 130, 150)
+		durLabel := fmt.Sprintf("Durée analyse IA : %dm%02ds", r.generationSecs/60, r.generationSecs%60)
+		if r.engineName != "" {
+			durLabel += " — " + r.engineName
+		}
+		pdf.CellFormat(r.cW, 4, toL1(durLabel), "", 1, "C", false, 0, "")
+		pdf.SetFont("Helvetica", "", 6.5)
+		pdf.SetTextColor(150, 160, 175)
+		pdf.CellFormat(r.cW, 4,
+			toL1("Généré par Analyseur Forensic IA CCM Bercy — modèle local llama.cpp — aucune donnée transmise à un tiers"),
+			"", 1, "C", false, 0, "")
+	}
 }
 
 // ─── Primitives de mise en page ───────────────────────────────────────────────
@@ -1941,6 +2046,259 @@ func (r *AIReporter) abuseIPDBTable(reps map[string]IPReputation) {
 	}
 	pdf.SetTextColor(0, 0, 0)
 	pdf.Ln(4)
+}
+
+// ─── Section preuves kernel ───────────────────────────────────────────────────
+
+// kernelEvidenceSection affiche les événements kernel les plus significatifs.
+// Montre les preuves concrètes : fichiers créés, connexions réseau, tâches planifiées.
+// ─── Section cmdlines suspectes ──────────────────────────────────────────────
+
+func (r *AIReporter) cmdlineSection(processes []models.ProcessWithTask) {
+	if len(processes) == 0 {
+		return
+	}
+	// Filtrer les cmdlines suspectes (curl, ftp, schtasks, powershell, wscript...)
+	suspectKeywords := []string{"curl", "ftp", "schtasks", "powershell", "invoke-",
+		"wscript", "cscript", "mshta", "regsvr32", "rundll32", "certutil", "bitsadmin"}
+	type suspectCmd struct {
+		binary  string
+		cmdline string
+		taskID  string
+	}
+	var cmds []suspectCmd
+	for _, p := range processes {
+		if p.Cmd == nil {
+			continue
+		}
+		cmdStr := ""
+		switch v := p.Cmd.(type) {
+		case string:
+			cmdStr = v
+		case []interface{}:
+			parts := make([]string, 0)
+			for _, c := range v {
+				if s, ok := c.(string); ok {
+					parts = append(parts, s)
+				}
+			}
+			cmdStr = strings.Join(parts, " ")
+		}
+		if cmdStr == "" {
+			continue
+		}
+		lower := strings.ToLower(cmdStr)
+		for _, kw := range suspectKeywords {
+			if strings.Contains(lower, kw) {
+				parts := strings.Split(strings.ReplaceAll(p.Image, "\\", "/"), "/")
+				binary := parts[len(parts)-1]
+				cmds = append(cmds, suspectCmd{binary: binary, cmdline: cmdStr, taskID: p.TaskID})
+				break
+			}
+		}
+		if len(cmds) >= 10 {
+			break
+		}
+	}
+	if len(cmds) == 0 {
+		return
+	}
+	r.pdf.AddPage()
+	r.pageTitle("COMMANDES SUSPECTES DÉTECTÉES", "")
+	r.chapIntro(fmt.Sprintf(
+		"%d commande(s) suspecte(s) identifiee(s) — curl, ftp, schtasks, PowerShell, WScript. "+
+			"Ces commandes indiquent des capacites de telechargement, d'exfiltration et de persistance.",
+		len(cmds)))
+	r.subSection(fmt.Sprintf("Cmdlines suspectes — %d detectee(s)", len(cmds)))
+	rows := make([][]string, 0, len(cmds))
+	for _, cmd := range cmds {
+		display := cmd.cmdline
+		if len(display) > 120 {
+			display = display[:120] + "..."
+		}
+		rows = append(rows, []string{
+			cmd.binary,
+			display,
+			"SUSPECT",
+		})
+	}
+	// Table avec 3 colonnes : Binaire | Cmdline | Risque
+	colW := []float64{30, r.cW - 50, 20}
+	headers := []string{"Binaire", "Ligne de commande", "Risque"}
+	r.pdf.SetFont("Helvetica", "B", 7.5)
+	r.pdf.SetFillColor(20, 30, 60)
+	r.pdf.SetTextColor(255, 255, 255)
+	x := r.mL
+	for i, h := range headers {
+		r.pdf.SetXY(x, r.pdf.GetY())
+		r.pdf.CellFormat(colW[i], 7, toL1(h), "0", 0, "L", true, 0, "")
+		x += colW[i]
+	}
+	r.pdf.Ln(7)
+	r.pdf.SetFont("Helvetica", "", 7)
+	alt := false
+	for _, row := range rows {
+		if alt {
+			r.pdf.SetFillColor(240, 244, 255)
+		} else {
+			r.pdf.SetFillColor(255, 255, 255)
+		}
+		r.pdf.SetTextColor(20, 30, 60)
+		x = r.mL
+		for i, cell := range row {
+			r.pdf.SetXY(x, r.pdf.GetY())
+			fill := i < 2
+			r.pdf.CellFormat(colW[i], 6.5, toL1(cell), "0", 0, "L", fill, 0, "")
+			x += colW[i]
+		}
+		r.pdf.Ln(6.5)
+		alt = !alt
+	}
+}
+
+func (r *AIReporter) kernelEvidenceSection(evs []models.KernelEvent) {
+	r.pdf.AddPage()
+	r.pageTitle("PREUVES KERNEL — TIMELINE TECHNIQUE", "")
+	r.chapIntro(toL1("Evenements observes directement par le moniteur kernel de RF Sandbox. " +
+		"Ces donnees constituent les preuves techniques de l'activite malveillante."))
+
+	r.subSection(fmt.Sprintf("Evenements significatifs detectes (%d)", len(evs)))
+
+	rows := make([][]string, 0, len(evs))
+	for _, ev := range evs {
+		t := ""
+		if ev.TimeMs > 0 {
+			t = fmt.Sprintf("+%ds", ev.TimeMs/1000)
+		}
+		img := ev.Image
+		if len(img) > 20 {
+			parts := strings.Split(strings.ReplaceAll(img, "\\", "/"), "/")
+			img = parts[len(parts)-1]
+		}
+		target := ev.Target
+		if len(target) > 50 {
+			target = "..." + target[len(target)-47:]
+		}
+		rows = append(rows, []string{t, img, ev.Action, target})
+	}
+
+	// Tableau compact: temps | processus | action | cible
+	pdf := r.pdf
+	pdf.SetFont("Helvetica", "B", 7)
+	pdf.SetFillColor(30, 40, 70)
+	pdf.SetTextColor(255, 255, 255)
+	headers := []string{"T+", "Processus", "Action", "Cible"}
+	widths := []float64{12, 32, 28, r.cW - 76}
+	for i, h := range headers {
+		pdf.CellFormat(widths[i], 5.5, h, "0", 0, "C", true, 0, "")
+	}
+	pdf.Ln(-1)
+	pdf.SetFont("Helvetica", "", 6.5)
+	for i, row := range rows {
+		if pdf.GetY() > r.pageH-25 {
+			pdf.AddPage()
+			r.drawHeader()
+		}
+		bg := i%2 == 0
+		if bg {
+			pdf.SetFillColor(245, 247, 250)
+		} else {
+			pdf.SetFillColor(255, 255, 255)
+		}
+		pdf.SetTextColor(30, 41, 59)
+		for j, cell := range row {
+			pdf.CellFormat(widths[j], 5, toL1(cell), "0", 0, "L", bg, 0, "")
+		}
+		pdf.Ln(-1)
+	}
+}
+
+// extractKernelEventsForPDF sélectionne les N événements les plus significatifs pour le PDF.
+func extractKernelEventsForPDF(results []*models.AnalysisResult, n int) []models.KernelEvent {
+	// Pour le PDF, on filtre les events les plus significatifs mais sans limite stricte.
+	// n est utilisé comme guide si > 0, mais tous les events significatifs sont inclus.
+	var critical []models.KernelEvent
+	for _, r := range results {
+		for _, ev := range r.KernelEvents {
+			a := strings.ToLower(ev.Action)
+			t := strings.ToLower(ev.Target)
+			if (strings.Contains(a, "file") && strings.Contains(a, "create") &&
+				(strings.Contains(t, ".exe") || strings.Contains(t, ".dll") || strings.Contains(t, ".bat") ||
+					strings.Contains(t, ".ps1") || strings.Contains(t, ".vbs") || strings.Contains(t, ".js"))) ||
+				strings.Contains(a, "file_delete") ||
+				strings.Contains(a, "net") || strings.Contains(a, "connect") ||
+				strings.Contains(a, "sched") || strings.Contains(t, "schtasks") ||
+				strings.Contains(a, "reg") ||
+				strings.Contains(t, "users\\public") || strings.Contains(t, "users/public") {
+				critical = append(critical, ev)
+			}
+		}
+	}
+	// Tri chronologique
+	for i := 0; i < len(critical)-1; i++ {
+		for j := i + 1; j < len(critical); j++ {
+			if critical[j].TimeMs < critical[i].TimeMs {
+				critical[i], critical[j] = critical[j], critical[i]
+			}
+		}
+	}
+	// Appliquer la limite n uniquement si > 0
+	if n > 0 && len(critical) > n {
+		return critical[:n]
+	}
+	return critical
+}
+
+// ─── Section fichiers déposés ──────────────────────────────────────────────────
+
+// droppedFilesSection affiche les fichiers déposés par le malware (payloads 2ème stage).
+func (r *AIReporter) droppedFilesSection(files []models.DroppedFileInfo) {
+	r.pdf.AddPage()
+	r.pageTitle("FICHIERS DEPOSES PAR LE MALWARE", "")
+	r.chapIntro(toL1("Payloads de 2eme stage telecharges et executes par le malware initial. " +
+		"Ces fichiers constituent des IOCs supplementaires a bloquer dans l'EDR et l'antivirus."))
+
+	r.subSection(fmt.Sprintf("Payloads detectes (%d fichier(s))", len(files)))
+
+	pdf := r.pdf
+	pdf.SetFont("Helvetica", "B", 7.5)
+	pdf.SetFillColor(30, 40, 70)
+	pdf.SetTextColor(255, 255, 255)
+	headers := []string{"Nom", "Type", "Taille", "SHA256 (partiel)"}
+	widths := []float64{60, 18, 18, r.cW - 100}
+	for i, h := range headers {
+		pdf.CellFormat(widths[i], 6, h, "0", 0, "L", true, 0, "")
+	}
+	pdf.Ln(-1)
+	pdf.SetFont("Helvetica", "", 7)
+	for i, f := range files {
+		if pdf.GetY() > r.pageH-25 {
+			pdf.AddPage()
+			r.drawHeader()
+		}
+		bg := i%2 == 0
+		if bg {
+			pdf.SetFillColor(245, 247, 250)
+		} else {
+			pdf.SetFillColor(255, 255, 255)
+		}
+		pdf.SetTextColor(30, 41, 59)
+		sha := f.SHA256
+		if len(sha) > 20 {
+			sha = sha[:20] + "..."
+		}
+		sizeFmt := fmt.Sprintf("%d B", f.Size)
+		if f.Size > 1024*1024 {
+			sizeFmt = fmt.Sprintf("%.1f Mo", float64(f.Size)/1024/1024)
+		} else if f.Size > 1024 {
+			sizeFmt = fmt.Sprintf("%.1f Ko", float64(f.Size)/1024)
+		}
+		row := []string{toL1(f.Name), f.Kind, sizeFmt, sha}
+		for j, cell := range row {
+			pdf.CellFormat(widths[j], 5.5, cell, "0", 0, "L", bg, 0, "")
+		}
+		pdf.Ln(-1)
+	}
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

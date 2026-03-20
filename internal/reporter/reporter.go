@@ -887,6 +887,29 @@ func (g *Generator) iocSection(results []*models.AnalysisResult) {
 	g.iocBlock("URLs HTTP/S observées", allURLs)
 	g.iocBlock("Mutexes / Artefacts", allMutexes)
 
+	// Infrastructure légitime utilisée comme C2 (technique LOLBin)
+	// Ces IPs ne sont pas bloquables mais les DOMAINES SNI associés le sont.
+	allLegitIPs := uniqueStrs(flatLegitInfraIPs(results))
+	if len(allLegitIPs) > 0 {
+		g.pdf.Ln(3)
+		g.subTitle(fmt.Sprintf("Infrastructure legitime utilisee comme C2 (LOLBin) — %d IP(s)", len(allLegitIPs)))
+		// Note explicative
+		g.setFont("Helvetica", "I", 8)
+		g.setColor(color{100, 100, 100})
+		g.pdf.SetX(g.marginL)
+		g.pdf.MultiCell(g.contentW, 4.5, toL1(
+			"Ces adresses appartiennent a Microsoft Azure / SharePoint / OneDrive — "+
+				"infrastructure legitime utilisee comme canal C2 (technique LOLBin/LOLBAS). "+
+				"NE PAS bloquer ces IPs au pare-feu — surveiller les domaines SNI dans les logs proxy/DNS."), "", "L", false)
+		g.setColor(color{0, 0, 0})
+		// Tableau des IPs avec note
+		rows := make([][]string, 0)
+		for _, ip := range allLegitIPs {
+			rows = append(rows, []string{ip, "Microsoft / Azure", "LOLBin C2", "SURVEILLER — non bloquable"})
+		}
+		g.table([]string{"IP", "Org", "Technique", "Action"}, rows, []float64{40, 40, 30, 70}, colNavy)
+	}
+
 	// Hashes
 	g.subTitle("Empreintes cryptographiques")
 	hashRows := [][]string{}
@@ -906,6 +929,47 @@ func (g *Generator) iocSection(results []*models.AnalysisResult) {
 		g.table([]string{"Type", "Valeur"}, hashRows, []float64{18, 162}, colNavy)
 	}
 	g.sectionConclusion("Bloquer immédiatement toutes les IPs et domaines listés au niveau pare-feu et proxy. Ajouter les hashes MD5/SHA-256 aux listes noires EDR et antivirus. Rechercher dans les logs si d'autres postes ont déjà contacté ces IOCs — chaque occurrence supplémentaire indique une propagation.")
+
+	// ── Infrastructure légitime utilisée comme C2 (LOLBin) ──────────────────────
+	// Ces IPs ne peuvent pas être bloquées (SharePoint/OneDrive/Azure) mais
+	// les domaines SNI TLS associés sont les vrais IOCs réseau.
+	allegitIPs := make([]string, 0)
+	allegitSNIs := make([]string, 0)
+	for _, r := range results {
+		allegitIPs = append(allegitIPs, r.IOCs.LegitInfraIPs...)
+		for _, nr := range r.Network {
+			for _, f := range nr.Flows {
+				if f.SNI != "" && f.SNI != f.Domain {
+					allegitSNIs = append(allegitSNIs, f.SNI)
+				}
+			}
+		}
+	}
+	allegitIPs = uniqueStrs(allegitIPs)
+	allegitSNIs = uniqueStrs(allegitSNIs)
+	if len(allegitIPs) > 0 || len(allegitSNIs) > 0 {
+		g.pdf.AddPage()
+		g.sectionTitle("INFRASTRUCTURE LÉGITIME UTILISÉE COMME C2 (LOLBIN)")
+		g.sectionIntro(
+			"Ces adresses IP appartiennent à des hébergeurs légitimes (Microsoft Azure, SharePoint, OneDrive) " +
+				"utilisés comme canal C2 par le malware via la technique LOLBAS/LOLBin. " +
+				"NE PAS bloquer ces IPs au pare-feu — les serveurs légitimes hébergent aussi des services autorisés. " +
+				"Les DOMAINES SNI ci-dessous sont les vrais indicateurs à surveiller dans les logs proxy et DNS.")
+		if len(allegitIPs) > 0 {
+			g.subTitle(fmt.Sprintf("IPs infrastructure légitime — %d adresse(s)", len(allegitIPs)))
+			rows := make([][]string, 0)
+			for _, ip := range allegitIPs {
+				rows = append(rows, []string{ip, "Microsoft / Azure / SharePoint", "SURVEILLER — non bloquable"})
+			}
+			g.table([]string{"Adresse IP", "Organisation", "Action recommandée"},
+				rows, []float64{50, 80, 60}, color{20, 30, 60})
+		}
+		if len(allegitSNIs) > 0 {
+			g.subTitle(fmt.Sprintf("Domaines SNI TLS — %d domaine(s) (VRAIS IOCs réseau)", len(allegitSNIs)))
+			g.bodyText("Ces domaines ont été contactés via TLS. Ils figurent dans le champ SNI des flux HTTPS capturés en sandbox. Les bloquer au niveau du proxy web ou du pare-feu HTTPS-inspection est la mesure corrective principale.")
+			g.iocBlock("Domaines SNI à surveiller et bloquer proxy", allegitSNIs)
+		}
+	}
 }
 
 func (g *Generator) iocBlock(title string, items []string) {
@@ -2206,6 +2270,14 @@ func flatDomains(results []*models.AnalysisResult) []string {
 	var out []string
 	for _, r := range results {
 		out = append(out, r.IOCs.Domains...)
+		// Inclure aussi les SNI TLS (domaines HTTPS non dans IOCs.Domains)
+		for _, nr := range r.Network {
+			for _, f := range nr.Flows {
+				if f.SNI != "" {
+					out = append(out, f.SNI)
+				}
+			}
+		}
 	}
 	return out
 }
@@ -2220,6 +2292,14 @@ func flatMutexes(results []*models.AnalysisResult) []string {
 	var out []string
 	for _, r := range results {
 		out = append(out, r.IOCs.Mutexes...)
+	}
+	return out
+}
+
+func flatLegitInfraIPs(results []*models.AnalysisResult) []string {
+	var out []string
+	for _, r := range results {
+		out = append(out, r.IOCs.LegitInfraIPs...)
 	}
 	return out
 }

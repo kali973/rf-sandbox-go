@@ -503,11 +503,12 @@ type ExtractWithTask struct {
 
 // IOCBundle regroupe tous les IOCs extraits
 type IOCBundle struct {
-	IPs     []string
-	Domains []string
-	URLs    []string
-	Hashes  []string
-	Mutexes []string
+	IPs           []string
+	Domains       []string
+	URLs          []string
+	Hashes        []string
+	Mutexes       []string
+	LegitInfraIPs []string // IPs infra légitime (Azure/SharePoint) utilisée comme C2 — non bloquables
 }
 
 // ─── Rapport Statique ─────────────────────────────────────────────────────

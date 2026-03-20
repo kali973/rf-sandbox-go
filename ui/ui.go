@@ -161,12 +161,45 @@ func Start(cfg ServerConfig) {
 	mux.HandleFunc("/api/fetch", makeFetchHandler(cfg))
 	mux.HandleFunc("/api/report", makeReportHandler(cfg))
 	mux.HandleFunc("/api/warmup", makeWarmupHandler(cfg))
+	mux.HandleFunc("/api/cancel", makeCancelHandler())
 	mux.HandleFunc("/api/models", makeModelsHandler(cfg))
 	mux.HandleFunc("/api/models/download", makeModelDownloadHandler(cfg))
 	mux.HandleFunc("/api/models/progress", makeModelProgressHandler())
+	// Export CSV de la base de connaissances
+	mux.HandleFunc("/api/knowledge/export-csv", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" {
+			http.Error(w, "méthode non autorisée", 405)
+			return
+		}
+		csvPath := filepath.Join(knowledgeDir(), "analyses.csv")
+		count, err := ai.ExportCSV(csvPath)
+		if err != nil {
+			http.Error(w, "Export CSV : "+err.Error(), 500)
+			return
+		}
+		// Retourner le fichier CSV en téléchargement
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		w.Header().Set("Content-Disposition", `attachment; filename="analyses_rf_sandbox.csv"`)
+		http.ServeFile(w, r, csvPath)
+		log.Printf("[KNOWLEDGE] Export CSV : %d analyses → %s", count, csvPath)
+	})
+
 	mux.HandleFunc("/api/knowledge/stats", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"stats": ai.KnowledgeStats()})
+		statsResult, err := ai.KnowledgeStatsJSON()
+		if err != nil {
+			json.NewEncoder(w).Encode(map[string]string{"stats": ai.KnowledgeStats(), "error": err.Error()})
+			return
+		}
+		// Compatibilité ascendante : inclure aussi la string "stats" pour le code existant
+		type statsResponse struct {
+			*ai.KnowledgeStatsResult
+			Stats string `json:"stats"`
+		}
+		json.NewEncoder(w).Encode(statsResponse{
+			KnowledgeStatsResult: statsResult,
+			Stats:                ai.KnowledgeStats(),
+		})
 	})
 	mux.HandleFunc("/api/training/export", makeTrainingExportHandler())
 	mux.HandleFunc("/api/training/start", makeTrainingStartHandler())
@@ -349,6 +382,19 @@ func startEngineWarmup(cfg ServerConfig) {
 			log.Printf("[WARMUP] ✓ Moteur IA prêt — %s opérationnel", ai.ModelDisplayName(bestModel))
 		}()
 	})
+}
+
+// makeCancelHandler — POST /api/cancel
+// Arrête llama-server et reset le flag de génération en cours.
+func makeCancelHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Tuer llama-server
+		ai.KillLlamaServer()
+		// Reset le flag warmup pour permettre un redémarrage propre
+		log.Println("[CANCEL] ✓ Génération annulée — llama-server arrêté")
+		json.NewEncoder(w).Encode(map[string]string{"status": "cancelled"})
+	}
 }
 
 // makeWarmupHandler — POST /api/warmup
@@ -598,6 +644,14 @@ func makeReportHandler(cfg ServerConfig) http.HandlerFunc {
 	}
 }
 
+// minChain retourne le minimum de deux entiers (helper local generateWithChain).
+func minChain(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // generateWithAI genere le rapport d'analyse.
 // Rapport Go de secours si llama-server est indisponible.
 // Pipeline :
@@ -688,6 +742,7 @@ func generateWithChain(
 	geoData map[string]ai.GeoInfo,
 	progress func(string),
 ) (bool, string, *ai.ForensicReport) {
+	// (durée globale mesurée par aiPipelineStart dans generateWithAI)
 
 	m1, m2 := ai.SelectChainModels()
 	if m1 == "" || m2 == "" {
@@ -723,6 +778,13 @@ func generateWithChain(
 	}
 	progress(ai.COK(fmt.Sprintf("[AI-CHAIN] ✓ M1 terminé — famille=%s | TTPs=%d | confiance=%s",
 		extraction.Famille, len(extraction.TTPsConfirmes), extraction.Confiance)))
+	// Logger les IOCs détectés par M1 pour visibilité
+	if len(extraction.InfraC2) > 0 {
+		progress(ai.CDetail("AI-CHAIN", fmt.Sprintf("C2 détecté: %s", strings.Join(extraction.InfraC2[:minChain(len(extraction.InfraC2), 3)], ", "))))
+	}
+	if len(extraction.IOCsNets) > 0 {
+		progress(ai.CDetail("AI-CHAIN", fmt.Sprintf("IOCs réseaux: %d identifiés", len(extraction.IOCsNets))))
+	}
 
 	// ── ÉTAPE 2 : M2 — Synthèse rapport complet ──────────────────────────────
 	progress(ai.CInfo("[AI-CHAIN] Étape 2/2 — Redémarrage M2 (synthèse rapport)..."))
@@ -743,8 +805,20 @@ func generateWithChain(
 
 	forensicReport, err := ai.ParseForensicResponse(rawM2)
 	if err != nil {
-		progress(ai.CWarn(fmt.Sprintf("[AI-CHAIN] M2 parsing JSON échoué (%v) — abandon chaîne", err)))
-		return false, "", nil
+		progress(ai.CWarn(fmt.Sprintf("[AI-CHAIN] M2 parsing JSON échoué (%v) — retry M2 avec prompt étendu", err)))
+		// Retry avec le prompt complet BuildForensicPrompt (plus de contexte)
+		promptM2Retry := ai.BuildForensicPrompt(results, enrichment, similar, geoData)
+		rawM2Retry, errRetry := clientM1.Generate(promptM2Retry, progress)
+		if errRetry != nil {
+			progress(ai.CWarn(fmt.Sprintf("[AI-CHAIN] Retry M2 échoué (%v) — abandon chaîne", errRetry)))
+			return false, "", nil
+		}
+		forensicReport, err = ai.ParseForensicResponse(rawM2Retry)
+		if err != nil {
+			progress(ai.CWarn(fmt.Sprintf("[AI-CHAIN] Retry M2 parsing JSON toujours échoué — abandon chaîne")))
+			return false, "", nil
+		}
+		progress(ai.COK("[AI-CHAIN] ✓ Retry M2 réussi"))
 	}
 
 	engineLabel := fmt.Sprintf("%s → %s", ai.ModelDisplayName(m1), ai.ModelDisplayName(m2))
@@ -755,6 +829,9 @@ func generateWithChain(
 }
 
 func generateWithAI(cfg ServerConfig, results []*models.AnalysisResult, outputPath, tlp string, useMitre, useAbuseIPDB, useKnowledge, useKnowledgeInject, useGeoIP bool) bool {
+	// Timer global : mesure la durée totale du pipeline IA (enrichissement + génération + PDF)
+	aiPipelineStart := time.Now()
+
 	// progress publie dans le log ET directement dans le hub SSE pour la loupe en temps réel
 	progress := func(msg string) {
 		log.Println(msg)
@@ -830,8 +907,10 @@ func generateWithAI(cfg ServerConfig, results []*models.AnalysisResult, outputPa
 	// Tenter la chaîne M1→M2 en priorité — meilleure qualité qu'un seul modèle
 	if ai.ChainAvailable() {
 		progress(ai.CInfo("[AI] Pipeline bi-modèle disponible — tentative chaîne M1→M2..."))
+		chainCallStart := time.Now()
 		ok, engineLabel, chainReport := generateWithChain(cfg, results, outputPath, tlp,
 			enrichment, similar, geoData, progress)
+		chainCallElapsed := time.Since(chainCallStart)
 		if ok && chainReport != nil {
 			// Mémorisation dans la base de connaissances
 			if useKnowledge {
@@ -844,6 +923,10 @@ func generateWithAI(cfg ServerConfig, results []*models.AnalysisResult, outputPa
 			// Génération PDF
 			aiReporter := ai.NewAIReporter(outputPath, tlp, geoData)
 			aiReporter.SetEngine(engineLabel)
+			aiReporter.SetGenerationDuration(int(chainCallElapsed.Seconds()))
+			if enrichment != nil {
+				aiReporter.SetEnrichment(enrichment)
+			}
 			if err := aiReporter.Generate(results, chainReport); err != nil {
 				progress(ai.CWarn(fmt.Sprintf("[AI-CHAIN] PDF échoué (%v) — repli mono-modèle", err)))
 			} else {
@@ -910,11 +993,14 @@ func generateWithAI(cfg ServerConfig, results []*models.AnalysisResult, outputPa
 
 	// ── 4. Generation llama.cpp ───────────────────────────────────────────────
 	var err error
+	genStart := time.Now()
 	rawResponse, err = llamaClient.Generate(prompt, progress)
+	genElapsed := time.Since(genStart)
 	if err != nil {
 		log.Printf(ai.CErr("[AI] Génération llama-server échouée: %v — repli sur rapport Go"), err)
 		return false
 	}
+	progress(ai.CGrey(fmt.Sprintf("[AI] Génération terminée en %s (%d chars)", genElapsed.Round(time.Second), len(rawResponse))))
 
 	progress(ai.CInfo("[AI] Génération terminée — parsing JSON..."))
 	forensicReport, err := ai.ParseForensicResponse(rawResponse)
@@ -985,6 +1071,9 @@ func generateWithAI(cfg ServerConfig, results []*models.AnalysisResult, outputPa
 				tmp2Path := tmp2.Name()
 				tmp2.Close()
 				aiReporter2 := ai.NewAIReporter(tmp2Path, tlp, geoData)
+				if enrichment != nil {
+					aiReporter2.SetEnrichment(enrichment)
+				}
 				if e := aiReporter2.Generate(results, report2); e != nil {
 					log.Printf(ai.CErr("[AI-FALLBACK] Génération PDF Qwen échouée: %v"), e)
 					os.Remove(tmp2Path)
@@ -1009,6 +1098,21 @@ func generateWithAI(cfg ServerConfig, results []*models.AnalysisResult, outputPa
 	} else {
 		progress(ai.COK(fmt.Sprintf("[AI] ✓ Rapport parsé — classification: %s — score: %d/10",
 			forensicReport.Classification, forensicReport.ScoreGlobal)))
+		// Détecter divergence score RF (sandbox) vs score IA (analyse comportementale)
+		for _, r := range results {
+			if r.Score > 0 {
+				diff := forensicReport.ScoreGlobal - r.Score
+				if diff < 0 {
+					diff = -diff
+				}
+				if diff >= 2 {
+					progress(ai.CWarn(fmt.Sprintf(
+						"[AI] ⚠ Score RF=%d/10 → Score IA=%d/10 — l'IA a rehaussé/baissé selon son analyse comportementale complète",
+						r.Score, forensicReport.ScoreGlobal)))
+				}
+				break
+			}
+		}
 		// Télécharger Qwen en arrière-plan si absent, pour être prêt au prochain besoin
 		if !ai.FallbackModelPresent() {
 			go ai.EnsureFallbackModel(func(msg string) { log.Println(msg) })
@@ -1048,12 +1152,20 @@ func generateWithAI(cfg ServerConfig, results []*models.AnalysisResult, outputPa
 	progress(ai.CInfo("[AI] Génération du PDF en cours..."))
 	aiReporter := ai.NewAIReporter(outputPath, tlp, geoData)
 	aiReporter.SetEngine(engineUsed)
+	aiReporter.SetGenerationDuration(int(genElapsed.Seconds()))
+	if enrichment != nil {
+		aiReporter.SetEnrichment(enrichment)
+	}
 	if err := aiReporter.Generate(results, forensicReport); err != nil {
 		log.Printf(ai.CErr("[AI] Génération PDF échouée: %v — repli sur rapport Go"), err)
 		return false
 	}
 
 	progress(ai.COK("[AI] ✓ Rapport PDF généré avec succès"))
+	// Durée totale du pipeline IA
+	aiTotalElapsed := time.Since(aiPipelineStart)
+	progress(ai.COK(fmt.Sprintf("[AI] ══ Pipeline IA terminé en %s (enrichissement + génération + PDF) ══",
+		aiTotalElapsed.Round(time.Second))))
 	return true
 }
 
@@ -1073,6 +1185,7 @@ func marshalResult(r *models.AnalysisResult) map[string]interface{} {
 		"filename":      r.Filename,
 		"status":        r.Status,
 		"score":         r.Score,
+		"rf_score":      r.Score, // score brut sandbox avant réévaluation IA
 		"family":        r.Family,
 		"tags":          r.Tags,
 		"hashes":        r.Hashes,
@@ -1221,6 +1334,15 @@ func ConfigDir() string {
 		return "config"
 	}
 	return filepath.Join(filepath.Dir(exe), "config")
+}
+
+// knowledgeDir retourne le répertoire de la base de connaissances.
+func knowledgeDir() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "knowledge"
+	}
+	return filepath.Join(filepath.Dir(exe), "knowledge")
 }
 
 // isMaskedExecutable détecte les fichiers PE déguisés via double extension.

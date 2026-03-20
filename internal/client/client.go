@@ -79,20 +79,40 @@ func NewWithProxy(token, proxy string) *Client {
 // ─── Méthodes HTTP de base ────────────────────────────────────────────────
 
 func (c *Client) get(path string, out interface{}) error {
-	resp, err := c.session.Get(BaseURL+path, nil)
-	if err != nil {
-		if _, ok := err.(*httpclient.ProxyError); ok {
-			c.session.ClearProxy()
-			resp, err = c.session.Get(BaseURL+path, nil)
-		}
+	return c.getWithRetry(path, out, 3)
+}
+
+// getWithRetry gère les 429 (rate-limit) RF Sandbox avec backoff exponentiel.
+// RF Sandbox impose ~60 req/min — un 429 est rare mais possible en soumissions massives.
+func (c *Client) getWithRetry(path string, out interface{}, maxRetries int) error {
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		resp, err := c.session.Get(BaseURL+path, nil)
 		if err != nil {
-			return fmt.Errorf("GET %s : %w", path, err)
+			if _, ok := err.(*httpclient.ProxyError); ok {
+				c.session.ClearProxy()
+				resp, err = c.session.Get(BaseURL+path, nil)
+			}
+			if err != nil {
+				return fmt.Errorf("GET %s : %w", path, err)
+			}
 		}
+		// 429 Rate Limit — attendre et réessayer avec backoff exponentiel
+		if resp.StatusCode == 429 {
+			if attempt >= maxRetries {
+				return fmt.Errorf("RF Sandbox rate-limit (429) après %d tentatives pour %s", maxRetries, path)
+			}
+			// Backoff : 5s, 15s, 45s
+			wait := time.Duration(5<<uint(attempt)) * time.Second
+			c.logger.Printf("[RF-API] ⚠ 429 Rate-limit — retry %d/%d dans %s : %s", attempt+1, maxRetries, wait, path)
+			time.Sleep(wait)
+			continue
+		}
+		if resp.StatusCode == 404 || resp.StatusCode == 400 {
+			return fmt.Errorf("HTTP %d pour %s", resp.StatusCode, path)
+		}
+		return resp.Decode(out)
 	}
-	if resp.StatusCode == 404 || resp.StatusCode == 400 {
-		return fmt.Errorf("HTTP %d pour %s", resp.StatusCode, path)
-	}
-	return resp.Decode(out)
+	return fmt.Errorf("GET %s : trop de tentatives", path)
 }
 
 func (c *Client) postJSON(path string, payload interface{}, out interface{}) error {
@@ -529,6 +549,15 @@ func (c *Client) fetchResults(sampleID string) (*models.AnalysisResult, error) {
 				}
 			}
 		}
+		// Fallback 2 : essayer tous les fichiers non filtrés
+		if r.Hashes.SHA256 == "" {
+			for _, f := range staticReport.Files {
+				if f.SHA256 != "" {
+					r.Hashes = models.Hashes{MD5: f.MD5, SHA1: f.SHA1, SHA256: f.SHA256, SHA512: f.SHA512}
+					break
+				}
+			}
+		}
 	}
 	for taskID, ts := range summary.Tasks {
 		if ts.Kind != "behavioral" || ts.Status != "reported" {
@@ -567,11 +596,21 @@ func (c *Client) fetchResults(sampleID string) (*models.AnalysisResult, error) {
 				if !isLegitOrg(flow.Org) {
 					r.IOCs.IPs = append(r.IOCs.IPs, ip)
 				} else {
-					c.logger.Printf("[INFO] IP %s ignorée des IOCs (org légitime: %s)", ip, flow.Org)
+					// Infra légitime utilisée comme C2 (LOLBin SharePoint, OneDrive...)
+					// Pas bloquable au pare-feu mais doit figurer dans le rapport pour contexte
+					r.IOCs.LegitInfraIPs = append(r.IOCs.LegitInfraIPs, ip)
 				}
 			}
+			// flow.Domain = domaine résolu par RF (DNS)
+			// flow.SNI = nom exact du serveur en TLS (SharePoint, OneDrive, C2 HTTPS)
+			// Pour les malwares LOLBin (SharePoint C2), le SNI contient le vrai domaine
 			if flow.Domain != "" {
 				r.IOCs.Domains = append(r.IOCs.Domains, flow.Domain)
+			}
+			// Extraire le SNI TLS — contient les domaines HTTPS même non résolus par DNS
+			// Ex: 0bgtr-my.sharepoint.com, stsipcprodpublic.blob.core.windows.net
+			if flow.SNI != "" && flow.SNI != flow.Domain {
+				r.IOCs.Domains = append(r.IOCs.Domains, flow.SNI)
 			}
 		}
 		for _, req := range triage.Network.Requests {
@@ -677,6 +716,7 @@ func (c *Client) fetchResults(sampleID string) (*models.AnalysisResult, error) {
 
 	// ── Déduplications finales ────────────────────────────────────────────
 	r.IOCs.IPs = uniqueStrings(r.IOCs.IPs)
+	r.IOCs.LegitInfraIPs = uniqueStrings(r.IOCs.LegitInfraIPs)
 	r.IOCs.Domains = uniqueStrings(r.IOCs.Domains)
 	r.IOCs.URLs = uniqueStrings(r.IOCs.URLs)
 	sort.Slice(r.Signatures, func(i, j int) bool {
@@ -894,7 +934,8 @@ func parseOnemonEvents(raw []byte, maxEvents int) []models.KernelEvent {
 				break
 			}
 		}
-		for _, k := range []string{"image", "proc", "process", "name"} {
+		for _, k := range []string{"image", "proc", "process", "name",
+			"process_name", "proc_name", "image_path", "ProcessName", "ImageName"} {
 			if v, ok := raw[k]; ok {
 				if s, ok := v.(string); ok && s != "" {
 					// Extraire juste le nom du binaire
@@ -911,7 +952,8 @@ func parseOnemonEvents(raw []byte, maxEvents int) []models.KernelEvent {
 		}
 
 		// Type d'action et cible
-		for _, k := range []string{"type", "action", "kind", "event"} {
+		for _, k := range []string{"type", "action", "kind", "event",
+			"event_type", "EventType", "call", "syscall", "Category"} {
 			if v, ok := raw[k]; ok {
 				if s, ok := v.(string); ok {
 					ev.Action = s
@@ -919,7 +961,9 @@ func parseOnemonEvents(raw []byte, maxEvents int) []models.KernelEvent {
 				break
 			}
 		}
-		for _, k := range []string{"path", "target", "key", "dst", "host", "url", "filename"} {
+		for _, k := range []string{"path", "target", "key", "dst", "host", "url", "filename",
+			"dst_ip", "dest", "remote_ip", "remote_host", "value", "reg_key",
+			"file_path", "TargetFilename", "TargetObject"} {
 			if v, ok := raw[k]; ok {
 				if s, ok := v.(string); ok && s != "" {
 					ev.Target = s
@@ -927,11 +971,31 @@ func parseOnemonEvents(raw []byte, maxEvents int) []models.KernelEvent {
 				break
 			}
 		}
+		// Enrichir Target avec le port destination pour les NetworkFlow (IP:port)
+		// 100.78.48.201:8080 est plus informatif que 100.78.48.201
+		if ev.Target != "" {
+			for _, pk := range []string{"dport", "dst_port", "port", "remote_port"} {
+				if v, ok := raw[pk]; ok {
+					switch port := v.(type) {
+					case float64:
+						if port > 0 && port != 80 && port != 443 {
+							ev.Target = fmt.Sprintf("%s:%d", ev.Target, int(port))
+						} else if port > 0 {
+							ev.Target = fmt.Sprintf("%s:%d", ev.Target, int(port))
+						}
+					}
+					break
+				}
+			}
+		}
 		// Détails supplémentaires (cmdline, status, etc.)
-		for _, k := range []string{"cmd", "cmdline", "command", "args", "status", "value"} {
+		for _, k := range []string{"cmd", "cmdline", "command", "args", "status", "value",
+			"CommandLine", "command_line", "proc_cmdline", "arguments"} {
 			if v, ok := raw[k]; ok {
 				if s, ok := v.(string); ok && s != "" {
-					ev.Details = truncateLog(s, 200)
+					ev.Details = truncateLog(s, 300)
+					// Si la cmdline contient curl/ftp/powershell → l'ajouter aux IOCs URLs
+					// (sera traité plus tard dans collectNetworkIOCs)
 				}
 				break
 			}

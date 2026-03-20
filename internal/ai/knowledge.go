@@ -8,11 +8,13 @@ package ai
 
 import (
 	"database/sql"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -289,7 +291,25 @@ func SaveAnalysis(results []*models.AnalysisResult, report *ForensicReport, enri
 			}
 		}
 
-		_, err := tx.Exec(`INSERT OR IGNORE INTO analyses
+		// Vérifier si une analyse similaire existe déjà (même SHA256)
+		// Si le nouveau score est meilleur, mettre à jour. Sinon logger le skip.
+		if r.Hashes.SHA256 != "" {
+			var existingScore int
+			var existingID string
+			tx.QueryRow("SELECT id, score FROM analyses WHERE hashes LIKE ? LIMIT 1",
+				"%"+r.Hashes.SHA256+"%").Scan(&existingID, &existingScore)
+			if existingID != "" && report.ScoreGlobal <= existingScore {
+				// Analyse existante avec score >= nouveau : on garde l'ancienne
+				// (skip silencieux déjà traité plus haut ne s'applique plus — on log maintenant)
+				count++ // compte quand même pour les stats
+				continue
+			}
+			if existingID != "" {
+				// Mise à jour si nouveau score meilleur
+				tx.Exec("DELETE FROM analyses WHERE id=?", existingID)
+			}
+		}
+		_, err := tx.Exec(`INSERT INTO analyses
 			(id,date,filename,famille,classification,score,ttps,ips,domaines,hashes,resume,recommandations,confiance,mitre_details,abuse_scores)
 			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			id,
@@ -482,6 +502,40 @@ func FormatKnowledgeForPrompt(similar []SimilarEntry) string {
 
 // ─── Stats ────────────────────────────────────────────────────────────────────
 
+// IsAlreadyAnalyzed vérifie si un fichier (par SHA256) a déjà été analysé
+// avec un score suffisant. Permet d'éviter les doublons et réanalyses inutiles.
+func IsAlreadyAnalyzed(sha256 string) (bool, *KnowledgeEntry) {
+	if sha256 == "" {
+		return false, nil
+	}
+	db, err := openDB()
+	if err != nil {
+		return false, nil
+	}
+	defer db.Close()
+
+	var id, filename, famille, classification string
+	var score int
+	var date string
+	err = db.QueryRow(
+		"SELECT id, filename, famille, classification, score, date FROM analyses WHERE sha256 = ? LIMIT 1",
+		sha256).Scan(&id, &filename, &famille, &classification, &score, &date)
+	if err != nil {
+		return false, nil // pas trouvé
+	}
+	if score < 3 {
+		return false, nil // score trop bas, re-analyser
+	}
+	return true, &KnowledgeEntry{
+		ID:              id,
+		Date:            date,
+		Filename:        filename,
+		FamillePresumee: famille,
+		Classification:  classification,
+		ScoreGlobal:     score,
+	}
+}
+
 func KnowledgeStats() string {
 	db, err := openDB()
 	if err != nil {
@@ -500,11 +554,163 @@ func KnowledgeStats() string {
 	if len(lastDate) >= 10 {
 		lastDate = lastDate[:10]
 	}
+
+	// Chemin de la base
+	dbPath := dbFilePath()
 	return fmt.Sprintf("Base SQLite : %d analyses | %d familles | Derniere : %s | %s",
-		total, families, lastDate, knowledgeDBPath())
+		total, families, lastDate, dbPath)
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// KnowledgeStatsJSON retourne les statistiques détaillées de la base en JSON structuré.
+// Utilisé par /api/knowledge/stats pour l'interface web.
+type KnowledgeStatsResult struct {
+	Total       int          `json:"nb_analyses"`
+	Families    int          `json:"nb_familles"`
+	LastDate    string       `json:"derniere_analyse"`
+	AvgScore    float64      `json:"score_moyen"`
+	TopFamilies []FamilyStat `json:"top_familles"`
+	TopTTPs     []TTPStat    `json:"top_ttps"`
+	TopIOCs     []string     `json:"iocs_recents"`
+	NbCritique  int          `json:"nb_critique"`
+	NbEleve     int          `json:"nb_eleve"`
+	DBPath      string       `json:"db_path"`
+}
+
+type FamilyStat struct {
+	Famille string `json:"famille"`
+	Count   int    `json:"count"`
+}
+
+type TTPStat struct {
+	TTP   string `json:"ttp"`
+	Count int    `json:"count"`
+}
+
+func KnowledgeStatsJSON() (*KnowledgeStatsResult, error) {
+	db, err := openDB()
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+
+	result := &KnowledgeStatsResult{DBPath: dbFilePath()}
+
+	db.QueryRow("SELECT COUNT(*) FROM analyses").Scan(&result.Total)
+	if result.Total == 0 {
+		return result, nil
+	}
+	db.QueryRow("SELECT COUNT(DISTINCT famille) FROM analyses WHERE famille != ''").Scan(&result.Families)
+	db.QueryRow("SELECT date FROM analyses ORDER BY date DESC LIMIT 1").Scan(&result.LastDate)
+	if len(result.LastDate) >= 10 {
+		result.LastDate = result.LastDate[:10]
+	}
+	db.QueryRow("SELECT AVG(CAST(score AS REAL)) FROM analyses WHERE score > 0").Scan(&result.AvgScore)
+	db.QueryRow("SELECT COUNT(*) FROM analyses WHERE UPPER(classification) = 'CRITIQUE'").Scan(&result.NbCritique)
+	db.QueryRow("SELECT COUNT(*) FROM analyses WHERE UPPER(classification) IN ('ELEVE','ÉLEVÉ')").Scan(&result.NbEleve)
+
+	// Top 5 familles
+	rows, err := db.Query(`SELECT famille, COUNT(*) as cnt FROM analyses
+		WHERE famille != '' AND famille != 'Inconnue'
+		GROUP BY famille ORDER BY cnt DESC LIMIT 5`)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var fs FamilyStat
+			rows.Scan(&fs.Famille, &fs.Count)
+			result.TopFamilies = append(result.TopFamilies, fs)
+		}
+	}
+
+	// Top 10 TTPs (extraits du JSON ttps stocké)
+	ttpCount := make(map[string]int)
+	rows2, err := db.Query("SELECT ttps FROM analyses WHERE ttps != '' AND ttps != '[]'")
+	if err == nil {
+		defer rows2.Close()
+		for rows2.Next() {
+			var ttpsJSON string
+			rows2.Scan(&ttpsJSON)
+			// Parser les TTPs (format JSON array ["T1059","T1071",...])
+			var ttps []string
+			if json.Unmarshal([]byte(ttpsJSON), &ttps) == nil {
+				for _, t := range ttps {
+					if t != "" {
+						ttpCount[t]++
+					}
+				}
+			}
+		}
+	}
+	// Trier les TTPs par fréquence
+	type kv struct {
+		k string
+		v int
+	}
+	var sorted []kv
+	for k, v := range ttpCount {
+		sorted = append(sorted, kv{k, v})
+	}
+	for i := 0; i < len(sorted)-1; i++ {
+		for j := i + 1; j < len(sorted); j++ {
+			if sorted[j].v > sorted[i].v {
+				sorted[i], sorted[j] = sorted[j], sorted[i]
+			}
+		}
+	}
+	max10 := 10
+	if len(sorted) < max10 {
+		max10 = len(sorted)
+	}
+	for _, kv := range sorted[:max10] {
+		result.TopTTPs = append(result.TopTTPs, TTPStat{TTP: kv.k, Count: kv.v})
+	}
+
+	// 5 IOCs récents (hashes SHA256)
+	rows3, err := db.Query("SELECT hashes FROM analyses ORDER BY date DESC LIMIT 5")
+	if err == nil {
+		defer rows3.Close()
+		for rows3.Next() {
+			var hashJSON string
+			rows3.Scan(&hashJSON)
+			var hashes []string
+			if json.Unmarshal([]byte(hashJSON), &hashes) == nil && len(hashes) > 0 {
+				result.TopIOCs = append(result.TopIOCs, hashes[0])
+			}
+		}
+	}
+	return result, nil
+}
+
+// IsSHA256Known vérifie si un SHA256 est déjà dans la base de connaissances.
+// Retourne (true, score, famille) si connu, (false, 0, "") sinon.
+// Utilisé pour éviter de re-soumettre un fichier déjà analysé.
+func IsSHA256Known(sha256 string) (bool, int, string) {
+	if sha256 == "" {
+		return false, 0, ""
+	}
+	db, err := openDB()
+	if err != nil {
+		return false, 0, ""
+	}
+	defer db.Close()
+
+	var score int
+	var famille string
+	err = db.QueryRow(
+		"SELECT score, famille FROM analyses WHERE hashes LIKE ? ORDER BY date DESC LIMIT 1",
+		"%"+sha256+"%",
+	).Scan(&score, &famille)
+	if err != nil {
+		return false, 0, ""
+	}
+	return true, score, famille
+}
+
+// dbFilePath retourne le chemin de la base de données SQLite.
+func dbFilePath() string {
+	ex, _ := os.Executable()
+	dir := filepath.Dir(ex)
+	return filepath.Join(dir, "..", "knowledge", "analyses.db")
+}
 
 func containsStr(slice []string, s string) bool {
 	for _, v := range slice {
@@ -539,4 +745,72 @@ func sanitizeID(s string) string {
 		r = r[:40]
 	}
 	return r
+}
+
+// ExportCSV exporte la base de connaissances au format CSV pour analyse externe.
+// Le fichier CSV peut être ouvert dans Excel, Python pandas, ou tout outil BI.
+// Chemin par défaut : knowledge/analyses.csv (à côté de analyses.db).
+func ExportCSV(outputPath string) (int, error) {
+	db, err := openDB()
+	if err != nil {
+		return 0, err
+	}
+	defer db.Close()
+
+	rows, err := db.Query(`SELECT id, date, filename, famille, classification, score,
+		ttps, ips, domaines, hashes, resume, recommandations, confiance
+		FROM analyses ORDER BY date DESC`)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	f, err := os.Create(outputPath)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+
+	// BOM UTF-8 pour ouverture correcte dans Excel français
+	f.Write([]byte{0xEF, 0xBB, 0xBF})
+	w := csv.NewWriter(f)
+	w.Comma = ';' // séparateur européen pour Excel FR
+
+	// En-tête
+	w.Write([]string{"ID", "Date", "Fichier", "Famille", "Classification", "Score",
+		"TTPs", "IPs", "Domaines", "Hashes", "Résumé", "Recommandations", "Confiance"})
+
+	count := 0
+	for rows.Next() {
+		var id, date, filename, famille, classif, ttps, ips, domaines, hashes, resume, recs, confiance string
+		var score int
+		if err := rows.Scan(&id, &date, &filename, &famille, &classif, &score,
+			&ttps, &ips, &domaines, &hashes, &resume, &recs, &confiance); err != nil {
+			continue
+		}
+		// Aplatir les tableaux JSON en chaînes lisibles
+		ttpsFlat := flattenJSONArray(ttps)
+		ipsFlat := flattenJSONArray(ips)
+		domFlat := flattenJSONArray(domaines)
+		hashFlat := flattenJSONArray(hashes)
+		recsFlat := flattenJSONArray(recs)
+		w.Write([]string{id, date[:10], filename, famille, classif,
+			strconv.Itoa(score), ttpsFlat, ipsFlat, domFlat, hashFlat,
+			resume, recsFlat, confiance})
+		count++
+	}
+	w.Flush()
+	return count, w.Error()
+}
+
+// flattenJSONArray transforme un JSON array en string lisible : ["T1059","T1071"] → "T1059, T1071"
+func flattenJSONArray(jsonArr string) string {
+	if jsonArr == "" || jsonArr == "[]" || jsonArr == "null" {
+		return ""
+	}
+	var items []string
+	if err := json.Unmarshal([]byte(jsonArr), &items); err != nil {
+		return jsonArr // retourner tel quel si pas parsable
+	}
+	return strings.Join(items, ", ")
 }

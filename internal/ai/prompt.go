@@ -125,7 +125,12 @@ type TechExtraction struct {
 	Propagation      string   `json:"propagation_estimee"`
 	IOCsNets         []string `json:"iocs_nets"`
 	Comportements    []string `json:"comportements_cles"`
-	Confiance        string   `json:"confiance"` // "HAUTE" | "MOYENNE" | "FAIBLE"
+	PayloadStage2    []string `json:"payload_stage2,omitempty"`     // NVIDIA.exe, libcef.dll, etc.
+	C2Infrastructure []string `json:"c2_infrastructure,omitempty"`  // SharePoint, OneDrive, domaines C2
+	TechniquesDLL    []string `json:"dll_sideloading,omitempty"`    // DLLs malveillantes identifiées
+	Persistance      []string `json:"persistance,omitempty"`        // schtasks, registry run keys, etc.
+	Exfiltration     []string `json:"exfiltration_tools,omitempty"` // curl, ftp, outils d'exfiltration
+	Confiance        string   `json:"confiance"`                    // "HAUTE" | "MOYENNE" | "FAIBLE"
 }
 
 // BuildExtractionPrompt construit le prompt court pour M1 (spécialiste cyber).
@@ -140,11 +145,16 @@ func BuildExtractionPrompt(results []*models.AnalysisResult, enrichment *Enrichm
 	sb.WriteString("Réponds UNIQUEMENT en JSON valide, sans texte avant ni après :\n")
 	sb.WriteString(`{
   "famille": "nom exact de la famille malware ou 'Inconnue'",
-  "ttps_confirmes": ["T1059.001", "T1071"],
+  "ttps_confirmes": ["T1059.001", "T1071", "T1053.005", "T1574.002"],
   "infra_c2": ["ip:port ou domaine C2"],
   "vecteur_infection": "description courte du vecteur",
   "propagation_estimee": "CRITIQUE|ELEVE|MOYEN|FAIBLE",
-  "iocs_nets": ["hash", "ip", "domaine"],
+  "iocs_nets": ["hash", "ip:port", "domaine"],
+  "payload_stage2": ["NVIDIA.exe", "libcef.dll"],
+  "c2_infrastructure": ["0bgtr-my.sharepoint.com", "graph.microsoft.com"],
+  "dll_sideloading": ["libcef.dll chargée par NVIDIA.exe via DLL sideloading"],
+  "persistance": ["schtasks /create NVIDIA quotidien 10:50"],
+  "exfiltration_tools": ["curl.exe vers ipinfo.io", "ftp.exe via r.txt"],
   "comportements_cles": ["comportement 1 observé", "comportement 2"],
   "confiance": "HAUTE|MOYENNE|FAIBLE"
 }` + "\n\n")
@@ -178,6 +188,85 @@ func BuildExtractionPrompt(results []*models.AnalysisResult, enrichment *Enrichm
 		}
 	}
 
+	// ── Flux réseau (top 10 destinations) ─────────────────────────────────
+	netFlows := extractTopFlows(results, 10)
+	if len(netFlows) > 0 {
+		sb.WriteString("\n--- FLUX RÉSEAU (destinations C2 candidates) ---\n")
+		for _, f := range netFlows {
+			line := fmt.Sprintf("  → %s", f.dest)
+			if f.domain != "" {
+				line += fmt.Sprintf(" (%s)", f.domain)
+			}
+			if f.country != "" {
+				line += fmt.Sprintf(" [%s]", f.country)
+			}
+			if f.txBytes > 0 {
+				line += fmt.Sprintf(" ↑%d octets", f.txBytes)
+			}
+			sb.WriteString(line + "\n")
+		}
+	}
+
+	// ── Cmdlines suspectes (curl, ftp, schtasks, powershell) ────────────────
+	suspectCmds := extractSuspectCmdlines(results)
+	if len(suspectCmds) > 0 {
+		sb.WriteString("\n--- COMMANDES SUSPECTES (curl/ftp/schtasks détectées) ---\n")
+		for _, cmd := range suspectCmds {
+			sb.WriteString(fmt.Sprintf("  [%s] %s\n", cmd.binary, truncateStr(cmd.cmdline, 150)))
+		}
+	}
+
+	// ── KernelEvents critiques (file_create + net_connect filtrés) ──────────
+	// Passer TOUS les events kernel à M1 — aucune troncature
+	// M1 doit voir la timeline complète pour identifier famille/TTPs/C2
+	criticalEvents := extractAllKernelEvents(results)
+	if len(criticalEvents) > 0 {
+		sb.WriteString("\n--- ÉVÉNEMENTS KERNEL CRITIQUES ---\n")
+		for _, ev := range criticalEvents {
+			// Format compact : timestamp, processus, action, cible
+			// Ignorer les events sans cible ni action significative (bruit)
+			if ev.Target == "" && ev.Action == "" {
+				continue
+			}
+			action := ev.Action
+			if len(action) > 20 {
+				action = action[:20]
+			}
+			if ev.Target != "" {
+				sb.WriteString(fmt.Sprintf("  [%dms] %s | %s → %s\n",
+					ev.TimeMs, ev.Image, action, truncateStr(ev.Target, 100)))
+			} else {
+				sb.WriteString(fmt.Sprintf("  [%dms] %s | %s\n",
+					ev.TimeMs, ev.Image, action))
+			}
+		}
+	}
+
+	// ── Fichiers déposés par le malware (payloads 2ème stage) ─────────────────
+	for _, r := range results {
+		if len(r.DroppedFiles) > 0 {
+			sb.WriteString("\n--- FICHIERS DÉPOSÉS PAR LE MALWARE (payloads 2ème stage) ---\n")
+			for i, df := range r.DroppedFiles {
+				if i >= 8 {
+					break
+				}
+				line := fmt.Sprintf("  [%s] %s (%d octets)", df.Kind, df.Name, df.Size)
+				if df.SHA256 != "" {
+					line += fmt.Sprintf(" SHA256=%s", df.SHA256[:16]+"...")
+				}
+				sb.WriteString(line + "\n")
+				// Contenu des scripts (r.txt, 11.txt, commandes ftp/curl)
+				if len(df.Content) > 0 && len(df.Content) <= 4096 {
+					ext := strings.ToLower(filepath.Ext(df.Name))
+					if ext == ".txt" || ext == ".bat" || ext == ".ps1" || ext == ".js" {
+						sb.WriteString(fmt.Sprintf("    Contenu: %s\n", string(df.Content[:minExt(len(df.Content), 200)])))
+					}
+				}
+			}
+			break // une seule fois pour tous les résultats
+		}
+	}
+
 	if enrichment != nil && len(enrichment.MitreTechniques) > 0 {
 		sb.WriteString("\n--- ENRICHISSEMENT MITRE ---\n")
 		for id, detail := range enrichment.MitreTechniques {
@@ -185,6 +274,169 @@ func BuildExtractionPrompt(results []*models.AnalysisResult, enrichment *Enrichm
 		}
 	}
 	return sb.String()
+}
+
+func minExt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// ─── Helpers extraction M1 ────────────────────────────────────────────────────
+
+type netFlowSummary struct {
+	dest    string
+	domain  string
+	country string
+	txBytes uint64
+}
+
+type cmdlineSummary struct {
+	binary  string
+	cmdline string
+}
+
+// extractTopFlows retourne les N connexions réseau les plus significatives.
+// Filtre les IPs privées et loopback, trie par volume de données envoyées.
+func extractTopFlows(results []*models.AnalysisResult, n int) []netFlowSummary {
+	var flows []netFlowSummary
+	for _, r := range results {
+		for _, nr := range r.Network {
+			for _, f := range nr.Flows {
+				if f.Dest == "" || isPrivateIPAddr(f.Dest) {
+					continue
+				}
+				flows = append(flows, netFlowSummary{
+					dest:    f.Dest,
+					domain:  f.Domain,
+					country: f.Country,
+					txBytes: f.TxBytes,
+				})
+			}
+		}
+	}
+	// Trier par volume envoyé décroissant
+	for i := 0; i < len(flows)-1; i++ {
+		for j := i + 1; j < len(flows); j++ {
+			if flows[j].txBytes > flows[i].txBytes {
+				flows[i], flows[j] = flows[j], flows[i]
+			}
+		}
+	}
+	if len(flows) > n {
+		return flows[:n]
+	}
+	return flows
+}
+
+// extractSuspectCmdlines extrait les cmdlines suspectes (curl, ftp, schtasks, wscript...).
+func extractSuspectCmdlines(results []*models.AnalysisResult) []cmdlineSummary {
+	var cmds []cmdlineSummary
+	suspectBinaries := []string{"curl", "ftp", "schtasks", "powershell", "wscript", "cscript",
+		"mshta", "regsvr32", "rundll32", "certutil", "bitsadmin", "wget", "invoke-"}
+	for _, r := range results {
+		for _, p := range r.Processes {
+			if p.Cmd == nil {
+				continue
+			}
+			cmdline := ""
+			switch v := p.Cmd.(type) {
+			case string:
+				cmdline = v
+			case []interface{}:
+				parts := make([]string, 0)
+				for _, c := range v {
+					if s, ok := c.(string); ok {
+						parts = append(parts, s)
+					}
+				}
+				cmdline = strings.Join(parts, " ")
+			}
+			if cmdline == "" {
+				continue
+			}
+			lower := strings.ToLower(cmdline)
+			for _, suspect := range suspectBinaries {
+				if strings.Contains(lower, suspect) {
+					parts := strings.Split(strings.ReplaceAll(p.Image, "\\", "/"), "/")
+					binary := parts[len(parts)-1]
+					cmds = append(cmds, cmdlineSummary{binary: binary, cmdline: cmdline})
+					break
+				}
+			}
+			if len(cmds) >= 10 {
+				break
+			}
+		}
+	}
+	return cmds
+}
+
+// extractCriticalKernelEvents filtre les N events kernel les plus importants pour M1.
+func extractCriticalKernelEvents(results []*models.AnalysisResult, n int) []models.KernelEvent {
+	var critical []models.KernelEvent
+	for _, r := range results {
+		for _, ev := range r.KernelEvents {
+			a := strings.ToLower(ev.Action)
+			t := strings.ToLower(ev.Target)
+			// Événements hautement significatifs
+			if strings.Contains(a, "file") && strings.Contains(a, "create") &&
+				(strings.Contains(t, ".exe") || strings.Contains(t, ".dll") ||
+					strings.Contains(t, ".bat") || strings.Contains(t, ".ps1")) {
+				critical = append(critical, ev) // Fichiers exécutables créés
+			} else if strings.Contains(a, "net") || strings.Contains(a, "connect") {
+				critical = append(critical, ev) // Connexions réseau
+			} else if strings.Contains(a, "sched") || strings.Contains(t, "schtasks") {
+				critical = append(critical, ev) // Tâches planifiées
+			}
+			if len(critical) >= n {
+				break
+			}
+		}
+	}
+	return critical
+}
+
+// isPrivateIPAddr vérifie si une adresse IP est privée/loopback.
+// extractAllKernelEvents retourne TOUS les events kernel sans limite.
+// Contrairement à extractCriticalKernelEvents, aucun filtre n'est appliqué :
+// tous les events sont nécessaires pour une timeline complète et un rapport exact.
+func extractAllKernelEvents(results []*models.AnalysisResult) []models.KernelEvent {
+	var all []models.KernelEvent
+	for _, r := range results {
+		all = append(all, r.KernelEvents...)
+	}
+	// Tri chronologique
+	for i := 0; i < len(all)-1; i++ {
+		for j := i + 1; j < len(all); j++ {
+			if all[j].TimeMs < all[i].TimeMs {
+				all[i], all[j] = all[j], all[i]
+			}
+		}
+	}
+	return all
+}
+
+// appendUniq ajoute s dans slice si absent.
+func appendUniq(slice []string, s string) []string {
+	for _, v := range slice {
+		if v == s {
+			return slice
+		}
+	}
+	return append(slice, s)
+}
+
+func isPrivateIPAddr(ip string) bool {
+	private := []string{"127.", "10.", "192.168.", "172.16.", "172.17.", "172.18.",
+		"172.19.", "172.2", "172.3", "::1", "0.0.0.0", "localhost"}
+	for _, p := range private {
+		if strings.HasPrefix(ip, p) || ip == p {
+			return true
+		}
+	}
+	return false
 }
 
 // BuildSynthesisPrompt construit le prompt M2 à partir du résultat M1.
@@ -237,11 +489,45 @@ func BuildSynthesisPrompt(
 	// On lui demande exactement le même format que BuildForensicPrompt (mono-modèle)
 	sb.WriteString("\nProduis le rapport forensic complet au format JSON valide, sans texte avant ni après.\n")
 	sb.WriteString("Utilise l'extraction technique ci-dessus comme base factuelle — enrichis avec le contexte métier.\n")
+	sb.WriteString("IMPORTANT : Si payload_stage2 contient NVIDIA.exe/libcef.dll → identifie T1574.002 DLL sideloading.\n")
+	sb.WriteString("IMPORTANT : Si c2_infrastructure contient *.sharepoint.com ou *.microsoft.com → c'est une technique LOLBin (C2 via infra légitime).\n")
+	sb.WriteString("IMPORTANT : Si persistance contient schtasks → identifie T1053.005 et décris la tâche planifiée.\n")
+	sb.WriteString("IMPORTANT : Si exfiltration_tools contient curl/ftp → identifie T1041 et T1082 si ipinfo.io est mentionné.\n")
 	sb.WriteString("Le JSON doit contenir tous les champs du ForensicReport : ")
 	sb.WriteString("classification, score_global, resume_executif, pourquoi_malveillant, ")
 	sb.WriteString("timeline_attaque, risque_lateralisation, etat_compromission, donnees_exposees, ")
 	sb.WriteString("analyse_comportementale, analyse_reseau, techniques_mitre, iocs_critiques, ")
 	sb.WriteString("attribution, posture_reponse, recommandations, niveau_confiance, conclusion.\n")
+	// ── Données réseau brutes RF — transmises à M2 pour éviter les lacunes ─
+	flowsM2 := extractTopFlows(results, 15)
+	if len(flowsM2) > 0 {
+		sb.WriteString("\n--- CONNEXIONS RÉSEAU OBSERVÉES EN SANDBOX ---\n")
+		for _, f := range flowsM2 {
+			line := fmt.Sprintf("  → %s", f.dest)
+			if f.domain != "" {
+				line += " (domaine: " + f.domain + ")"
+			}
+			if f.country != "" {
+				line += " [" + f.country + "]"
+			}
+			sb.WriteString(line + "\n")
+		}
+	}
+	cmdsM2 := extractSuspectCmdlines(results)
+	if len(cmdsM2) > 0 {
+		sb.WriteString("\n--- COMMANDES SUSPECTES (curl/ftp/schtasks) ---\n")
+		for _, cmd := range cmdsM2 {
+			sb.WriteString(fmt.Sprintf("  [%s] %s\n", cmd.binary, truncateStr(cmd.cmdline, 120)))
+		}
+	}
+
+	// Contrainte critique : rappel explicite des types tableaux
+	// Qwen 2.5 14B retourne parfois {} au lieu de [] (observé en production)
+	sb.WriteString(`
+
+TYPES JSON OBLIGATOIRES — ces champs DOIVENT être des tableaux [] jamais des objets {} :
+  timeline_attaque, techniques_mitre, iocs_critiques, recommandations, donnees_exposees
+`)
 	return sb.String()
 }
 
@@ -258,6 +544,57 @@ func BuildForensicPrompt(results []*models.AnalysisResult, enrichment *Enrichmen
 	data := buildCondensedData(results)
 	dataJSON, _ := json.MarshalIndent(data, "", "  ")
 
+	// ── Extraction IOCs factuels pour injection directe ──────────────────────
+	// Ces données sont extraites des résultats RF Sandbox et DOIVENT être citées
+	// exactement telles quelles dans le rapport — pas de "non spécifié"
+	var factualIPs, factualDomains, factualHashes []string
+	for _, r := range results {
+		for _, ip := range r.IOCs.IPs {
+			if ip != "" && !isPrivateIPAddr(ip) {
+				factualIPs = appendUniq(factualIPs, ip)
+			}
+		}
+		for _, d := range r.IOCs.Domains {
+			if d != "" {
+				factualDomains = appendUniq(factualDomains, d)
+			}
+		}
+		for _, nr := range r.Network {
+			for _, f := range nr.Flows {
+				if f.Dest != "" && !isPrivateIPAddr(f.Dest) {
+					factualIPs = appendUniq(factualIPs, f.Dest)
+				}
+				if f.Domain != "" {
+					factualDomains = appendUniq(factualDomains, f.Domain)
+				}
+				if f.SNI != "" && f.SNI != f.Domain {
+					factualDomains = appendUniq(factualDomains, f.SNI)
+				}
+			}
+		}
+		if r.Hashes.SHA256 != "" {
+			factualHashes = appendUniq(factualHashes, r.Hashes.SHA256)
+		}
+		if r.Hashes.MD5 != "" {
+			factualHashes = appendUniq(factualHashes, "MD5:"+r.Hashes.MD5)
+		}
+	}
+	// Données factuelles à citer obligatoirement
+	var factualBlock strings.Builder
+	if len(factualIPs) > 0 || len(factualDomains) > 0 || len(factualHashes) > 0 {
+		factualBlock.WriteString("\n⚠ DONNÉES FACTUELLES OBLIGATOIRES — CITE CES VALEURS EXACTES DANS LE RAPPORT :\n")
+		if len(factualIPs) > 0 {
+			factualBlock.WriteString(fmt.Sprintf("  IPs contactées : %s\n", strings.Join(factualIPs, ", ")))
+		}
+		if len(factualDomains) > 0 {
+			factualBlock.WriteString(fmt.Sprintf("  Domaines contactés : %s\n", strings.Join(factualDomains, ", ")))
+		}
+		if len(factualHashes) > 0 {
+			factualBlock.WriteString(fmt.Sprintf("  Hashes fichier : %s\n", strings.Join(factualHashes, " | ")))
+		}
+		factualBlock.WriteString("  → NE PAS écrire 'non spécifié' si une valeur figure ci-dessus\n")
+	}
+
 	// Contexte additionnel : enrichissement + historique
 	extraContext := ""
 	if enrichment != nil {
@@ -272,6 +609,10 @@ func BuildForensicPrompt(results []*models.AnalysisResult, enrichment *Enrichmen
 
 	// Schéma JSON attendu de l'IA — chaque champ est une instruction de rédaction
 	// Schéma JSON forensique — chaque champ guide la rédaction de l'IA
+	// Injecter le bloc factuel dans extraContext si non vide
+	if factualBlock.Len() > 0 {
+		extraContext = factualBlock.String() + extraContext
+	}
 	schema := `{
   "classification": "CHOISIS UNE SEULE VALEUR parmi : CRITIQUE / ELEVE / MOYEN / FAIBLE / BENIN",
   "score_global": 7,
@@ -296,7 +637,7 @@ func BuildForensicPrompt(results []*models.AnalysisResult, enrichment *Enrichmen
     },
     {
       "phase": "Phase 3 : Communication C2",
-      "action": "Domaines et IPs contactes, protocoles utilises",
+      "action": "Cite EXACTEMENT les IPs et domaines des données factuelles ci-dessus — ex: connexion vers 150.171.28.10:443 et login.microsoftonline.com",
       "impact": "Lattaquant prend le controle et peut envoyer des ordres ou exfiltrer des donnees",
       "detecte": true
     }
@@ -481,7 +822,11 @@ REGLES ABSOLUES :
 3. SOIS PRECIS sur le niveau de certitude : distingue ce qui est confirme (observe en sandbox) vs probable (comportement typique de cette famille).
 4. NE FABRIQUE PAS d'informations : si une donnee n'est pas dans le JSON, ecris "Non determine a partir des donnees disponibles."
 5. REPONDS UNIQUEMENT avec du JSON valide. Zero texte avant ou apres. Zero balise markdown.
-6. INTRO ET CONCLUSION OBLIGATOIRES : les champs *_intro et *_conclusion sont OBLIGATOIRES dans chaque section. Ils doivent etre SPECIFIQUES aux donnees analysees — jamais generiques. Chaque intro nomme un element concret (processus, IP, fichier). Chaque conclusion donne une action concrete basee sur ce qui a ete observe. Un champ intro ou conclusion vide ou generique ("Cette section presente...") est une ERREUR.
+6. INTRO ET CONCLUSION OBLIGATOIRES : les champs *_intro et *_conclusion sont OBLIGATOIRES dans chaque section. Ils doivent etre SPECIFIQUES aux donnees analysees — jamais generiques. Chaque intro nomme un element concret (processus, IP, fichier). Chaque conclusion donne une action concrete basee sur ce qui a ete observe. Un champ intro ou conclusion vide ou generique ("Cette section presente...") est une ERR
+7. TECHNIQUE LOLBIN/LOLBAS : Si tu vois des connexions vers *.sharepoint.com, *.onedrive.com, *.microsoft.com, graph.microsoft.com ou login.microsoftonline.com dans les IOCs ou flows reseau, c'est le signe d'un C2 via infrastructure legitime (LOLBin). Indique explicitement : "Canal C2 via infrastructure Microsoft legitime (technique LOLBin/LOLBAS) — non bloquable directement, surveiller le domaine SNI dans les logs proxy."
+8. DLL SIDELOADING : Si NVIDIA.exe, libcef.dll, ou tout exe+dll dans Users\Public sont presents dans les fichiers deposes, identifie T1574.002 (DLL Side-Loading) et explique : "Binaire NVIDIA legitime utilise comme vecteur pour executer une DLL malveillante libcef.dll via DLL sideloading."
+9. PERSISTANCE SCHTASKS : Si schtasks ou une tache planifiee est mentionnee dans les events kernel ou les cmdlines, identifie T1053.005 (Scheduled Task) et decris la persistance.
+10. EXFILTRATION FTP/CURL : Si curl.exe ou ftp.exe sont dans les cmdlines avec des arguments vers des URLs externes ou des fichiers .txt (r.txt, 11.txt), identifie T1041 (Exfiltration Over C2 Channel) et T1082 (System Information Discovery via ipinfo.io).EUR.
 
 DONNEES D'ANALYSE SANDBOX :
 %s%s
@@ -601,7 +946,46 @@ func sanitizeForensicReport(r *ForensicReport) {
 	r.Attribution.Indicateurs = cleanTemplateSlice(r.Attribution.Indicateurs)
 }
 
+// DataBudget définit les limites adaptatives selon la richesse des données RF sandbox.
+// Un fichier .exe bien exécuté retourne 400 events, 20+ procs, 18 IPs — budget élevé.
+// Un fichier .cer statique retourne 0 events, 0 procs — budget standard.
+type DataBudget struct {
+	MaxSigs    int // max signatures à inclure
+	MaxFlows   int // max flux réseau
+	MaxProcs   int // max processus
+	MaxKernel  int // max kernel events
+	MaxDropped int // max dropped files
+	MaxURLs    int // max URLs
+}
+
+// getRichnessBudget calcule le budget données selon la richesse de l'analyse sandbox.
+func getRichnessBudget(results []*models.AnalysisResult) DataBudget {
+	var totalSigs, totalDomains, totalProcs, totalKernel int
+	for _, r := range results {
+		totalSigs += len(r.Signatures)
+		totalDomains += len(r.IOCs.Domains) + len(r.IOCs.IPs)
+		totalProcs += len(r.Processes)
+		totalKernel += len(r.KernelEvents)
+	}
+	// MaxKernel = 0 signifie AUCUNE LIMITE — tous les events sont passés au modèle.
+	// 400 events × ~123 chars/event ≈ 49 Ko — rentre dans le contexte 32k tokens (114 Ko).
+	// Supprimer des events kernel = rapport incomplet : NVIDIA.exe, libcef.dll,
+	// schtasks, curl, FTP peuvent être dans les events 50-400 et sont critiques.
+	switch {
+	case totalSigs >= 10 || totalDomains >= 10 || totalKernel >= 200:
+		// Analyse riche
+		return DataBudget{MaxSigs: 20, MaxFlows: 30, MaxProcs: 30, MaxKernel: 0, MaxDropped: 12, MaxURLs: 25}
+	case totalSigs >= 3 || totalDomains >= 4 || totalKernel >= 50:
+		// Analyse moyenne
+		return DataBudget{MaxSigs: 15, MaxFlows: 25, MaxProcs: 25, MaxKernel: 0, MaxDropped: 10, MaxURLs: 20}
+	default:
+		// Analyse pauvre ou statique uniquement
+		return DataBudget{MaxSigs: 10, MaxFlows: 20, MaxProcs: 20, MaxKernel: 0, MaxDropped: 8, MaxURLs: 15}
+	}
+}
+
 func buildCondensedData(results []*models.AnalysisResult) map[string]interface{} {
+	budget := getRichnessBudget(results) // limites adaptatives selon richesse données RF
 	data := map[string]interface{}{
 		"nb_echantillons": len(results),
 		"echantillons":    make([]interface{}, 0, len(results)),
@@ -638,7 +1022,7 @@ func buildCondensedData(results []*models.AnalysisResult) map[string]interface{}
 		if len(r.Signatures) > 0 {
 			sigs := make([]map[string]interface{}, 0, 10)
 			for _, sig := range r.Signatures {
-				if len(sigs) >= 10 {
+				if len(sigs) >= budget.MaxSigs {
 					break
 				}
 				if sig.Score == 0 {
@@ -702,8 +1086,8 @@ func buildCondensedData(results []*models.AnalysisResult) map[string]interface{}
 			// URLs : limitées à 15 pour ne pas exploser le contexte (curl, ftp, C2, etc.)
 			if len(r.IOCs.URLs) > 0 {
 				urls := r.IOCs.URLs
-				if len(urls) > 15 {
-					urls = urls[:15]
+				if len(urls) > budget.MaxURLs {
+					urls = urls[:budget.MaxURLs]
 				}
 				iocs["urls"] = urls
 			}
@@ -713,6 +1097,12 @@ func buildCondensedData(results []*models.AnalysisResult) map[string]interface{}
 			// Hashes des fichiers malveillants identifiés (MD5/SHA256)
 			if len(r.IOCs.Hashes) > 0 {
 				iocs["hashes"] = r.IOCs.Hashes
+			}
+			// Infra légitime utilisée comme C2 (SharePoint, OneDrive, Azure...)
+			// Mention explicite pour l'IA : ces IPs ne doivent PAS être bloquées
+			// mais les DOMAINES associés (SNI) sont les vrais IOCs réseau
+			if len(r.IOCs.LegitInfraIPs) > 0 {
+				iocs["infra_legit_utilisee_c2"] = r.IOCs.LegitInfraIPs
 			}
 			sample["iocs"] = iocs
 		}
@@ -771,7 +1161,7 @@ func buildCondensedData(results []*models.AnalysisResult) map[string]interface{}
 		if len(r.Processes) > 0 {
 			procs := make([]map[string]interface{}, 0, 20)
 			for _, p := range r.Processes {
-				if len(procs) >= 20 {
+				if len(procs) >= budget.MaxProcs {
 					break
 				}
 				if p.Image == "" {
@@ -863,8 +1253,23 @@ func buildCondensedData(results []*models.AnalysisResult) map[string]interface{}
 		// Limité à 50 événements les plus significatifs pour ne pas saturer le contexte.
 		if len(r.KernelEvents) > 0 {
 			evs := r.KernelEvents
-			if len(evs) > 50 {
-				evs = evs[:50]
+			// Tri chronologique pur (TimeMs croissant) — tous les events étant passés,
+			// la timeline complète est plus importante que la priorité par type.
+			// L'IA voit les actions dans l'ordre réel d'exécution.
+			sortedEvs := make([]models.KernelEvent, len(evs))
+			copy(sortedEvs, evs)
+			for i := 0; i < len(sortedEvs)-1; i++ {
+				for j := i + 1; j < len(sortedEvs); j++ {
+					if sortedEvs[j].TimeMs < sortedEvs[i].TimeMs {
+						sortedEvs[i], sortedEvs[j] = sortedEvs[j], sortedEvs[i]
+					}
+				}
+			}
+			evs = sortedEvs
+			// MaxKernel = 0 → aucune limite : tous les events sont passés au modèle
+			// Supprimer des events = risque de manquer NVIDIA.exe, libcef.dll, schtasks, curl
+			if budget.MaxKernel > 0 && len(evs) > budget.MaxKernel {
+				evs = evs[:budget.MaxKernel]
 			}
 			kernelList := make([]map[string]interface{}, 0, len(evs))
 			for _, ev := range evs {
@@ -928,6 +1333,27 @@ func buildCondensedData(results []*models.AnalysisResult) map[string]interface{}
 		}(),
 	}
 
+	// ── Budget token adaptatif ──────────────────────────────────────────────
+	// Si les données dépassent ~18k chars JSON, réduire les sections secondaires.
+	// Objectif : maintenir le prompt final sous ~24k chars pour Foundation-Sec-8B.
+	if rawSize, err := json.Marshal(data); err == nil && len(rawSize) > 18000 {
+		for _, echo := range data["echantillons"].([]interface{}) {
+			if m, ok := echo.(map[string]interface{}); ok {
+				// KernelEvents : NE PAS tronquer — tous les events sont nécessaires
+				// pour reconstruire la timeline complète (NVIDIA.exe, libcef.dll, schtasks, curl)
+				// Réduire URLs à 8
+				if iocs, ok2 := m["iocs"].(map[string]interface{}); ok2 {
+					if urls, ok3 := iocs["urls"].([]string); ok3 && len(urls) > 8 {
+						iocs["urls"] = urls[:8]
+					}
+				}
+				// Réduire processus à 10
+				if procs, ok2 := m["arbre_processus"].([]map[string]interface{}); ok2 && len(procs) > 10 {
+					m["arbre_processus"] = procs[:10]
+				}
+			}
+		}
+	}
 	return data
 }
 
@@ -957,10 +1383,11 @@ func buildNetworkSummary(r *models.AnalysisResult) map[string]interface{} {
 	// ── Flows réseau enrichis ─────────────────────────────────────────────
 	// Inclut géolocalisation native (Country/AS/Org), volume de données,
 	// et JA3/SNI pour les connexions TLS. Max 20 flows.
-	allFlows := make([]map[string]interface{}, 0, 20)
+	// Tous les flows réseau — pas de limite pour capturer tous les domaines C2
+	allFlows := make([]map[string]interface{}, 0, 50)
 	for _, nr := range r.Network {
 		for _, f := range nr.Flows {
-			if len(allFlows) >= 20 {
+			if len(allFlows) >= 50 { // 50 flows max pour éviter de saturer le contexte
 				break
 			}
 			flow := map[string]interface{}{
@@ -1166,6 +1593,46 @@ func cleanInvalidEscapes(s string) string {
 
 // ParseForensicResponse parse la réponse brute de l'IA en ForensicReport.
 // et JSON tronqué (tente une réparation des accolades manquantes).
+// normalizeJSONArrayFields corrige les champs qui devraient être des tableaux []
+// mais que le modèle a retournés comme objets {}.
+// Observé avec Qwen 2.5 14B pour timeline_attaque, techniques_mitre, etc.
+func normalizeJSONArrayFields(raw string) string {
+	arrayFields := []string{
+		"timeline_attaque", "techniques_mitre", "iocs_critiques",
+		"recommandations", "donnees_exposees", "ttps_confirmes", "iocs_nets",
+		"comportements_cles", "vecteurs", "systemes_cibles", "signes_detectes",
+		"actions_immediat", "actions_24h", "actions_72h",
+	}
+	for _, field := range arrayFields {
+		marker := `"` + field + `": {`
+		if !strings.Contains(raw, marker) {
+			continue
+		}
+		idx := strings.Index(raw, marker)
+		start := idx + len(`"`) + len(field) + len(`": `)
+		depth, end := 0, start
+		for end < len(raw) {
+			if raw[end] == '{' {
+				depth++
+			} else if raw[end] == '}' {
+				depth--
+				if depth == 0 {
+					end++
+					break
+				}
+			}
+			end++
+		}
+		if depth == 0 && end > start {
+			objContent := raw[start:end]
+			raw = strings.Replace(raw,
+				`"`+field+`": `+objContent,
+				`"`+field+`": [`+objContent+`]`, 1)
+		}
+	}
+	return raw
+}
+
 // ParseExtractionResponse parse la réponse JSON partielle de M1 (extraction technique).
 // Plus tolérant que ParseForensicResponse — le JSON partiel de M1 est moins strict.
 func ParseExtractionResponse(raw string) (*TechExtraction, error) {
@@ -1204,6 +1671,7 @@ func ParseForensicResponse(raw string) (*ForensicReport, error) {
 	// Mistral génère parfois des séquences d'échappement JSON invalides (\_ \. \: etc.)
 	// On les nettoie avant tout parsing
 	raw = cleanInvalidEscapes(raw)
+	raw = normalizeJSONArrayFields(raw) // Corriger {} → [] (bug Qwen 2.5 14B)
 
 	candidates := extractJSONCandidates(raw)
 	var lastErr error
