@@ -13,35 +13,46 @@ import (
 
 // ForensicReport est la structure JSON attendue de l'IA.
 type ForensicReport struct {
-	Classification                   string           `json:"classification"`
-	ScoreGlobal                      int              `json:"score_global"`
-	ResumeExecutif                   string           `json:"resume_executif"`
-	PourquoiMalveillant              string           `json:"pourquoi_malveillant"`
-	TimelineAttaque                  []TimelineEvent  `json:"timeline_attaque"`
-	RisqueLateralisation             RisqueLateral    `json:"risque_lateralisation"`
-	EtatCompromission                string           `json:"etat_compromission"`
-	DonneesExposees                  []DonneeExposee  `json:"donnees_exposees"`
-	AnalyseComportementaleIntro      string           `json:"analyse_comportementale_intro"`
-	AnalyseComportementale           string           `json:"analyse_comportementale"`
-	AnalyseComportementaleConclusion string           `json:"analyse_comportementale_conclusion"`
-	AnalyseReseauIntro               string           `json:"analyse_reseau_intro"`
-	AnalyseReseau                    string           `json:"analyse_reseau"`
-	AnalyseReseauConclusion          string           `json:"analyse_reseau_conclusion"`
-	AnalyseProcessusIntro            string           `json:"analyse_processus_intro"`
-	AnalyseProcessus                 string           `json:"analyse_processus"`
-	AnalyseProcessusConclusion       string           `json:"analyse_processus_conclusion"`
-	AnalyseStatiqueIntro             string           `json:"analyse_statique_intro"`
-	AnalyseStatique                  string           `json:"analyse_statique"`
-	AnalyseStatiqueConclusion        string           `json:"analyse_statique_conclusion"`
-	ConfigsMalware                   string           `json:"configs_malware"`
-	TechniquesMitre                  []MitreEntry     `json:"techniques_mitre"`
-	IOCsCritiques                    []IOCEntry       `json:"iocs_critiques"`
-	Attribution                      AttributionEntry `json:"attribution"`
-	PostureReponse                   PostureRI        `json:"posture_reponse"`
-	Recommandations                  []Recommandation `json:"recommandations"`
-	IndicateursCompromission         string           `json:"indicateurs_compromission"`
-	NiveauConfiance                  string           `json:"niveau_confiance"`
-	Conclusion                       string           `json:"conclusion"`
+	Classification                   string              `json:"classification"`
+	ScoreGlobal                      int                 `json:"score_global"`
+	ResumeExecutif                   string              `json:"resume_executif"`
+	PourquoiMalveillant              string              `json:"pourquoi_malveillant"`
+	TimelineAttaque                  []TimelineEvent     `json:"timeline_attaque"`
+	RisqueLateralisation             RisqueLateral       `json:"risque_lateralisation"`
+	EtatCompromission                string              `json:"etat_compromission"`
+	GrilleCompromission              []EtatCompromission `json:"grille_compromission"`
+	DonneesExposees                  []DonneeExposee     `json:"donnees_exposees"`
+	AnalyseComportementaleIntro      string              `json:"analyse_comportementale_intro"`
+	AnalyseComportementale           string              `json:"analyse_comportementale"`
+	AnalyseComportementaleConclusion string              `json:"analyse_comportementale_conclusion"`
+	AnalyseReseauIntro               string              `json:"analyse_reseau_intro"`
+	AnalyseReseau                    string              `json:"analyse_reseau"`
+	AnalyseReseauConclusion          string              `json:"analyse_reseau_conclusion"`
+	AnalyseProcessusIntro            string              `json:"analyse_processus_intro"`
+	AnalyseProcessus                 string              `json:"analyse_processus"`
+	AnalyseProcessusConclusion       string              `json:"analyse_processus_conclusion"`
+	AnalyseStatiqueIntro             string              `json:"analyse_statique_intro"`
+	AnalyseStatique                  string              `json:"analyse_statique"`
+	AnalyseStatiqueConclusion        string              `json:"analyse_statique_conclusion"`
+	ConfigsMalware                   string              `json:"configs_malware"`
+	TechniquesMitre                  []MitreEntry        `json:"techniques_mitre"`
+	IOCsCritiques                    []IOCEntry          `json:"iocs_critiques"`
+	Attribution                      AttributionEntry    `json:"attribution"`
+	PostureReponse                   PostureRI           `json:"posture_reponse"`
+	Recommandations                  []Recommandation    `json:"recommandations"`
+	IndicateursCompromission         string              `json:"indicateurs_compromission"`
+	NiveauConfiance                  string              `json:"niveau_confiance"`
+	Conclusion                       string              `json:"conclusion"`
+}
+
+// EtatCompromission : l'un des 3 états possibles d'un poste après exposition.
+// Reproduit la grille de décision opérationnelle du rapport manuel.
+type EtatCompromission struct {
+	Cas         string `json:"cas"`         // "Cas 1", "Cas 2", "Cas 3"
+	Description string `json:"description"` // description courte de la situation
+	Signes      string `json:"signes"`      // fichiers/indicateurs à rechercher
+	Actions     string `json:"actions"`     // actions recommandées pour ce cas
+	Urgence     string `json:"urgence"`     // FAIBLE / MOYEN / CRITIQUE
 }
 
 // TimelineEvent : action horodatee du malware.
@@ -487,15 +498,34 @@ func BuildSynthesisPrompt(
 
 	// Schéma JSON de sortie attendu — M2 doit produire le ForensicReport complet
 	// On lui demande exactement le même format que BuildForensicPrompt (mono-modèle)
-	sb.WriteString("\nProduis le rapport forensic complet au format JSON valide, sans texte avant ni après.\n")
+	sb.WriteString("\n=== RÈGLES CRITIQUES AVANT TOUT — LIRE EN PREMIER ===\n")
+	sb.WriteString("RÈGLE 1 — LOLBIN INTERDIT DE BLOCAGE PÉRIMÈTRE :\n")
+	sb.WriteString("  login.microsoftonline.com, graph.microsoft.com, *.sharepoint.com, *.windows.net, *.onedrive.com\n")
+	sb.WriteString("  → Ce sont des domaines Microsoft LÉGITIMES. NE JAMAIS recommander leur blocage pare-feu.\n")
+	sb.WriteString("  → Les bloquer casserait Office365, Teams, Azure AD, OneDrive pour toute l'entreprise.\n")
+	sb.WriteString("  → Action correcte : créer une ALERTE proxy/EDR sur le domaine SNI. Mettre risque=ELEVE.\n")
+	sb.WriteString("  → Technique MITRE : T1102 (Web Service) ou T1071.001 (C2 via protocole web légitime).\n\n")
+	sb.WriteString("RÈGLE 2 — TTPS OBLIGATOIRES si données présentes :\n")
+	sb.WriteString("  • payload_stage2 contient NVIDIA.exe + libcef.dll → T1574.002 (DLL Side-Loading) OBLIGATOIRE\n")
+	sb.WriteString("  • persistance contient schtasks → T1053.005 (Scheduled Task/Job) OBLIGATOIRE\n")
+	sb.WriteString("  • exfiltration_tools contient curl/ftp → T1041 + T1082 (si ipinfo.io mentionné) OBLIGATOIRE\n")
+	sb.WriteString("  • c2_infrastructure contient *.sharepoint.com / *.microsoft.com → T1102 OBLIGATOIRE\n\n")
+	sb.WriteString("RÈGLE 3 — CALIBRATION SCORE :\n")
+	// Score calibration : évite l'inflation par rapport au score sandbox
+	for _, r := range results {
+		if r.Score > 0 {
+			sb.WriteString(fmt.Sprintf("  Score sandbox RF = %d/10. score_global IA MAXIMUM = %d/10.\n",
+				r.Score, r.Score+2))
+			sb.WriteString("  Tout score supérieur exige de citer des comportements critiques SUPPLÉMENTAIRES observés.\n")
+			break
+		}
+	}
+	sb.WriteString("\n=== FIN RÈGLES CRITIQUES ===\n\n")
+	sb.WriteString("Produis le rapport forensic complet au format JSON valide, sans texte avant ni après.\n")
 	sb.WriteString("Utilise l'extraction technique ci-dessus comme base factuelle — enrichis avec le contexte métier.\n")
-	sb.WriteString("IMPORTANT : Si payload_stage2 contient NVIDIA.exe/libcef.dll → identifie T1574.002 DLL sideloading.\n")
-	sb.WriteString("IMPORTANT : Si c2_infrastructure contient *.sharepoint.com ou *.microsoft.com → c'est une technique LOLBin (C2 via infra légitime).\n")
-	sb.WriteString("IMPORTANT : Si persistance contient schtasks → identifie T1053.005 et décris la tâche planifiée.\n")
-	sb.WriteString("IMPORTANT : Si exfiltration_tools contient curl/ftp → identifie T1041 et T1082 si ipinfo.io est mentionné.\n")
 	sb.WriteString("Le JSON doit contenir tous les champs du ForensicReport : ")
 	sb.WriteString("classification, score_global, resume_executif, pourquoi_malveillant, ")
-	sb.WriteString("timeline_attaque, risque_lateralisation, etat_compromission, donnees_exposees, ")
+	sb.WriteString("timeline_attaque, risque_lateralisation, etat_compromission, grille_compromission, donnees_exposees, ")
 	sb.WriteString("analyse_comportementale, analyse_reseau, techniques_mitre, iocs_critiques, ")
 	sb.WriteString("attribution, posture_reponse, recommandations, niveau_confiance, conclusion.\n")
 	// ── Données réseau brutes RF — transmises à M2 pour éviter les lacunes ─
@@ -711,8 +741,32 @@ func BuildForensicPrompt(results []*models.AnalysisResult, enrichment *Enrichmen
     {
       "type": "IP|Domaine|Hash-MD5|Hash-SHA256|Mutex|Fichier",
       "valeur": "valeur exacte issue des donnees sandbox",
-      "contexte": "2 phrases : (1) role precis dans l'attaque, (2) action immediate recommandee pour l'equipe SOC (bloquer au firewall, rechercher dans EDR, etc.).",
-      "risque": "CHOISIS UNE SEULE VALEUR : CRITIQUE / ELEVE / MOYEN / FAIBLE"
+      "contexte": "2 phrases : (1) role precis dans l'attaque, (2) action immediate recommandee pour l'equipe SOC. REGLE ABSOLUE LOLBin : si le domaine est *.microsoft.com / *.microsoftonline.com / *.sharepoint.com / *.windows.net, NE PAS recommander un blocage perimetre (cela casserait Office365, Teams, Azure AD). Ecrire a la place : 'Surveiller via alertes proxy/EDR sur ce domaine — non bloquable directement car infrastructure Microsoft legitime utilisee comme canal C2 (LOLBin).'",
+      "risque": "CHOISIS UNE SEULE VALEUR : CRITIQUE / ELEVE / MOYEN / FAIBLE. EXCEPTION LOLBin : les domaines *.microsoft.com et *.microsoftonline.com NE PEUVENT PAS avoir risque=CRITIQUE avec action de blocage — mettre risque=ELEVE avec action de surveillance."
+    }
+  ],
+
+  "grille_compromission": [
+    {
+      "cas": "Cas 1 — Aucun fichier malveillant present",
+      "description": "Decris la situation : le poste a eu une connexion vers le site compromis mais aucun telechargement ni execution n'a eu lieu.",
+      "signes": "Absence de : Certificate.cer.exe, nv.exe, NVIDIA.exe, libcef.dll, fichiers dans Users\\Public",
+      "actions": "Un scan antiviral avance par prudence suffit.",
+      "urgence": "FAIBLE"
+    },
+    {
+      "cas": "Cas 2 — Fichiers presents mais pas d'execution",
+      "description": "Decris la situation : fichiers malveillants telecharges mais non executes.",
+      "signes": "Presence de Certificate.cer.exe ou fichiers dans Users\\Public, mais aucune connexion sortante vers l'infra C2 et aucune tache planifiee NVIDIA.",
+      "actions": "1. Supprimer les fichiers malveillants identifies. 2. Scanner avec l'AV et verifier l'absence des IOCs.",
+      "urgence": "MOYEN"
+    },
+    {
+      "cas": "Cas 3 — Execution confirmee avec connexion C2",
+      "description": "Decris la situation : poste compromis, malware actif avec communication etablie vers l'infrastructure attaquant.",
+      "signes": "Presence de tache planifiee NVIDIA, connexions vers sharepoint/drive Microsoft, fichiers NVIDIA.exe + libcef.dll dans Users\\Public.",
+      "actions": "1. Reinitialiser tous les identifiants presents sur le poste. 2. Reinitialiser les sessions reseau actives. 3. Reinstaller le poste apres formatage bas niveau.",
+      "urgence": "CRITIQUE"
     }
   ],
 
@@ -758,7 +812,7 @@ func BuildForensicPrompt(results []*models.AnalysisResult, enrichment *Enrichmen
       "priorite": "CRITIQUE",
       "categorie": "BLOCAGE",
       "action": "Bloquer les IOCs au niveau perimetre",
-      "detail": "Instructions pour l'equipe reseau : ajouter les IPs et domaines identifies aux listes de blocage pare-feu et proxy, activer la journalisation de toute tentative de connexion vers ces destinations, verifier si d'autres postes ont deja contacte ces memes destinations.",
+      "detail": "Instructions pour l'equipe reseau : ajouter les IPs et domaines identifies aux listes de blocage pare-feu et proxy — SAUF les domaines Microsoft legitimes (login.microsoftonline.com, graph.microsoft.com, *.sharepoint.com, *.windows.net) qui NE DOIVENT PAS etre bloques (cela casserait Office365 et Teams). Pour ces domaines Microsoft, creer uniquement des alertes proxy et EDR sur l'activite du poste infecte. Activer la journalisation de toute tentative de connexion vers ces destinations.",
       "deadline": "Immediat"
     },
     {
@@ -823,10 +877,11 @@ REGLES ABSOLUES :
 4. NE FABRIQUE PAS d'informations : si une donnee n'est pas dans le JSON, ecris "Non determine a partir des donnees disponibles."
 5. REPONDS UNIQUEMENT avec du JSON valide. Zero texte avant ou apres. Zero balise markdown.
 6. INTRO ET CONCLUSION OBLIGATOIRES : les champs *_intro et *_conclusion sont OBLIGATOIRES dans chaque section. Ils doivent etre SPECIFIQUES aux donnees analysees — jamais generiques. Chaque intro nomme un element concret (processus, IP, fichier). Chaque conclusion donne une action concrete basee sur ce qui a ete observe. Un champ intro ou conclusion vide ou generique ("Cette section presente...") est une ERR
-7. TECHNIQUE LOLBIN/LOLBAS : Si tu vois des connexions vers *.sharepoint.com, *.onedrive.com, *.microsoft.com, graph.microsoft.com ou login.microsoftonline.com dans les IOCs ou flows reseau, c'est le signe d'un C2 via infrastructure legitime (LOLBin). Indique explicitement : "Canal C2 via infrastructure Microsoft legitime (technique LOLBin/LOLBAS) — non bloquable directement, surveiller le domaine SNI dans les logs proxy."
+7. TECHNIQUE LOLBIN/LOLBAS — RÈGLE CRITIQUE : Si tu vois des connexions vers *.sharepoint.com, *.onedrive.com, *.microsoft.com, *.microsoftonline.com, *.windows.net dans les IOCs ou flows reseau, c'est un C2 via infrastructure legitime (LOLBin/T1102). INTERDIT ABSOLU : ne jamais recommander de bloquer login.microsoftonline.com, graph.microsoft.com, *.sharepoint.com au pare-feu (cela casserait Office365, Teams et Azure AD). Action correcte UNIQUEMENT : "Creer une alerte proxy/EDR sur ce domaine (SNI TLS) et corréler avec activite du poste infecte." Mettre ces domaines en risque=ELEVE avec contexte de surveillance EDR, jamais CRITIQUE bloquable.
 8. DLL SIDELOADING : Si NVIDIA.exe, libcef.dll, ou tout exe+dll dans Users\Public sont presents dans les fichiers deposes, identifie T1574.002 (DLL Side-Loading) et explique : "Binaire NVIDIA legitime utilise comme vecteur pour executer une DLL malveillante libcef.dll via DLL sideloading."
 9. PERSISTANCE SCHTASKS : Si schtasks ou une tache planifiee est mentionnee dans les events kernel ou les cmdlines, identifie T1053.005 (Scheduled Task) et decris la persistance.
-10. EXFILTRATION FTP/CURL : Si curl.exe ou ftp.exe sont dans les cmdlines avec des arguments vers des URLs externes ou des fichiers .txt (r.txt, 11.txt), identifie T1041 (Exfiltration Over C2 Channel) et T1082 (System Information Discovery via ipinfo.io).EUR.
+10. EXFILTRATION FTP/CURL : Si curl.exe ou ftp.exe sont dans les cmdlines avec des arguments vers des URLs externes ou des fichiers .txt (r.txt, 11.txt), identifie T1041 (Exfiltration Over C2 Channel) et T1082 (System Information Discovery via ipinfo.io).
+11. SCORE CALIBRATION : score_global ne peut pas depasser le score sandbox de plus de 2 points sans observation comportementale confirmee. Si score sandbox = 5 et comportements limites, score_global doit etre <= 7. Justifie tout score >= 8 par des comportements specifiques observes.
 
 DONNEES D'ANALYSE SANDBOX :
 %s%s
@@ -839,7 +894,8 @@ REMPLIS CE JSON avec l'analyse reelle (remplace les descriptions par le contenu)
 // au lieu d'une vraie valeur. Typique de Mistral 7B sur les champs enum :
 // l'IA copie "CRITIQUE|ELEVE|MOYEN|FAIBLE|BENIN" au lieu de choisir une valeur.
 // On infère la valeur correcte depuis le score ou les autres champs.
-func sanitizeForensicReport(r *ForensicReport) {
+// Reçoit en option le score sandbox RF pour plafonner le score IA.
+func sanitizeForensicReport(r *ForensicReport, sandboxScore ...int) {
 	validLevels := map[string]bool{
 		"CRITIQUE": true, "ELEVE": true, "MOYEN": true, "FAIBLE": true, "BENIN": true,
 		"ÉLEVÉ": true, "ÉLEVÉE": true,
@@ -847,6 +903,17 @@ func sanitizeForensicReport(r *ForensicReport) {
 	validConfidence := map[string]bool{
 		"ELEVE": true, "MOYEN": true, "FAIBLE": true,
 		"ÉLEVÉ": true, "ÉLEVÉE": true,
+	}
+
+	// ── Plafonnement du score IA par rapport au score sandbox ─────────────
+	// L'IA ne peut pas donner un score supérieur au score sandbox de plus de 2
+	// points : évite l'inflation de score sur des analyses pauvres (ex: sandbox
+	// 5/10 → IA 9/10 sans comportements supplémentaires observés).
+	if len(sandboxScore) > 0 && sandboxScore[0] > 0 {
+		maxAllowed := sandboxScore[0] + 2
+		if r.ScoreGlobal > maxAllowed {
+			r.ScoreGlobal = maxAllowed
+		}
 	}
 
 	// ── Classification principale ─────────────────────────────────────────
@@ -888,10 +955,44 @@ func sanitizeForensicReport(r *ForensicReport) {
 	}
 
 	// ── Risque des IOCs ───────────────────────────────────────────────────
+	// Correction LOLBin : les domaines Microsoft légitimes utilisés comme C2
+	// NE PEUVENT PAS avoir risque=CRITIQUE avec action de blocage périmètre.
+	// Ce post-processing corrige les hallucinations du modèle sur ce point.
+	legitMicrosoftSuffixes := []string{
+		"microsoft.com", "microsoftonline.com", "sharepoint.com",
+		"windows.net", "onedrive.com", "live.com",
+	}
+	isLegitMSIOC := func(valeur string) bool {
+		v := strings.ToLower(strings.TrimSpace(valeur))
+		for _, suffix := range legitMicrosoftSuffixes {
+			if strings.HasSuffix(v, suffix) || strings.Contains(v, "."+suffix) {
+				return true
+			}
+		}
+		return false
+	}
 	for i, ioc := range r.IOCsCritiques {
 		risk := strings.ToUpper(ioc.Risque)
 		if strings.Contains(risk, "|") || !validLevels[risk] {
-			r.IOCsCritiques[i].Risque = "CRITIQUE"
+			if isLegitMSIOC(ioc.Valeur) {
+				r.IOCsCritiques[i].Risque = "ELEVE"
+			} else {
+				r.IOCsCritiques[i].Risque = "CRITIQUE"
+			}
+		}
+		// Downgrade CRITIQUE→ELEVE pour domaines Microsoft + corriger le contexte
+		if strings.ToUpper(ioc.Risque) == "CRITIQUE" && isLegitMSIOC(ioc.Valeur) {
+			r.IOCsCritiques[i].Risque = "ELEVE"
+			// Remplacer les recommandations de blocage par de la surveillance
+			contexte := ioc.Contexte
+			for _, badPhrase := range []string{"bloquer au pare-feu", "bloquer en perimetre", "bloquer le domaine", "bloquer cette IP"} {
+				if strings.Contains(strings.ToLower(contexte), badPhrase) {
+					r.IOCsCritiques[i].Contexte = "Infrastructure Microsoft légitime utilisée comme canal C2 (technique LOLBin/T1102). " +
+						"Ne pas bloquer au pare-feu (casserait Office365/Teams/Azure AD). " +
+						"Action recommandée : créer une alerte proxy et EDR sur ce domaine SNI et corréler avec l'activité du poste infecté."
+					break
+				}
+			}
 		}
 	}
 
@@ -1599,7 +1700,7 @@ func cleanInvalidEscapes(s string) string {
 func normalizeJSONArrayFields(raw string) string {
 	arrayFields := []string{
 		"timeline_attaque", "techniques_mitre", "iocs_critiques",
-		"recommandations", "donnees_exposees", "ttps_confirmes", "iocs_nets",
+		"recommandations", "donnees_exposees", "grille_compromission", "ttps_confirmes", "iocs_nets",
 		"comportements_cles", "vecteurs", "systemes_cibles", "signes_detectes",
 		"actions_immediat", "actions_24h", "actions_72h",
 	}
@@ -1667,7 +1768,7 @@ func ParseExtractionResponse(raw string) (*TechExtraction, error) {
 	return &extraction, nil
 }
 
-func ParseForensicResponse(raw string) (*ForensicReport, error) {
+func ParseForensicResponse(raw string, sandboxScore ...int) (*ForensicReport, error) {
 	// Mistral génère parfois des séquences d'échappement JSON invalides (\_ \. \: etc.)
 	// On les nettoie avant tout parsing
 	raw = cleanInvalidEscapes(raw)
@@ -1683,7 +1784,7 @@ func ParseForensicResponse(raw string) (*ForensicReport, error) {
 		var report ForensicReport
 		if err := json.Unmarshal([]byte(candidate), &report); err == nil {
 			if report.Classification != "" {
-				sanitizeForensicReport(&report)
+				sanitizeForensicReport(&report, sandboxScore...)
 				return &report, nil
 			}
 		} else {
@@ -1694,7 +1795,7 @@ func ParseForensicResponse(raw string) (*ForensicReport, error) {
 			var report2 ForensicReport
 			if err := json.Unmarshal([]byte(repaired), &report2); err == nil {
 				if report2.Classification != "" {
-					sanitizeForensicReport(&report2)
+					sanitizeForensicReport(&report2, sandboxScore...)
 					return &report2, nil
 				}
 			}

@@ -100,6 +100,14 @@ func main() {
 	}
 
 	// Conversion JSONL → texte brut pour llama-finetune
+	// isLlamaFamily déclaré ici car utilisé avant la section "Modèle de base"
+	// Foundation-Sec-8B et Llama 3.1 utilisent le template LLaMA 3.1 Chat
+	mDirEarly := filepath.Join(filepath.Dir(filepath.Dir(os.Args[0])), "moteur")
+	baseModelEarly, _ := findBaseModel(mDirEarly)
+	isLlamaFamily := strings.Contains(baseModelEarly, "Foundation-Sec") ||
+		strings.Contains(baseModelEarly, "Llama-3.1") ||
+		strings.Contains(baseModelEarly, "Meta-Llama-3.1")
+
 	datasetTXT := strings.TrimSuffix(datasetJSONL, ".jsonl") + ".txt"
 	if err := convertJSONLtoTXT(datasetJSONL, datasetTXT, isLlamaFamily); err != nil {
 		fatal("Conversion dataset : " + err.Error())
@@ -132,7 +140,7 @@ func main() {
 	// Mistral template        : Mistral 7B et autres
 	isFoundationSec := strings.Contains(baseModel, "Foundation-Sec")
 	isLlama31 := strings.Contains(baseModel, "Llama-3.1") || strings.Contains(baseModel, "Meta-Llama-3.1")
-	isLlamaFamily := isFoundationSec || isLlama31 // les deux utilisent LLaMA 3.1 Chat template
+	isLlamaFamily = isFoundationSec || isLlama31 // réaffectation (déjà déclaré plus haut)
 
 	log.Printf("  ✓ Modèle de base : %s", modelName)
 	switch {

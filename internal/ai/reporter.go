@@ -164,6 +164,12 @@ func (r *AIReporter) Generate(results []*models.AnalysisResult, report *Forensic
 		r.malveillanceSection(report)
 	}
 
+	// ── Grille des 3 états de compromission ───────────────────────────────────
+	// Aide les équipes terrain à qualifier rapidement l'état de chaque poste
+	if len(report.GrilleCompromission) > 0 {
+		r.grilleCompromissionSection(report)
+	}
+
 	// ── Timeline de l'attaque ─────────────────────────────────────────────────
 	if len(report.TimelineAttaque) > 0 {
 		r.timelineSection(report)
@@ -2048,6 +2054,139 @@ func (r *AIReporter) abuseIPDBTable(reps map[string]IPReputation) {
 	pdf.Ln(4)
 }
 
+// ─── Section grille des 3 états de compromission ─────────────────────────────
+
+// urgenceColor retourne une couleur et un label selon l'urgence du cas.
+func urgenceColor(urgence string) (color, string) {
+	switch strings.ToUpper(urgence) {
+	case "CRITIQUE":
+		return colRed, "CRITIQUE"
+	case "MOYEN", "ÉLEVÉ", "ELEVE":
+		return colYellow, strings.ToUpper(urgence)
+	case "FAIBLE":
+		return colGreen, "FAIBLE"
+	default:
+		return colGrey, urgence
+	}
+}
+
+// grilleCompromissionSection affiche la grille de décision opérationnelle
+// permettant aux équipes terrain de qualifier rapidement l'état d'un poste
+// exposé (3 cas : aucun fichier / fichiers présents / exécution confirmée).
+func (r *AIReporter) grilleCompromissionSection(report *ForensicReport) {
+	pdf := r.pdf
+	pdf.AddPage()
+	r.pageTitle("FRISE DE COMPROMISSION — ETATS POSSIBLES", "")
+	r.chapIntro(toL1("Pour chaque poste ayant eu une connexion vers le portail compromis, " +
+		"trois etats sont possibles. Cette grille permet aux equipes terrain de qualifier " +
+		"rapidement la situation et d'appliquer les actions adaptees."))
+
+	pdf.Ln(4)
+
+	for idx, etat := range report.GrilleCompromission {
+		if pdf.GetY() > r.pageH-60 {
+			pdf.AddPage()
+			r.drawHeader()
+		}
+
+		cc, label := urgenceColor(etat.Urgence)
+		cbg := classBg(etat.Urgence)
+		if cbg.r == 0 && cbg.g == 0 && cbg.b == 0 {
+			cbg = color{248, 249, 250}
+		}
+
+		// Calcul hauteur dynamique du bloc
+		pdf.SetFont("Helvetica", "", 8)
+		casLabel := fmt.Sprintf("CAS %d — %s", idx+1, strings.ToUpper(etat.Cas))
+		signesLines := pdf.SplitLines([]byte(toL1(etat.Signes)), r.cW-90)
+		actionsLines := pdf.SplitLines([]byte(toL1(etat.Actions)), r.cW-90)
+		innerH := float64(len(signesLines)+len(actionsLines))*4.0 + 28.0
+		if innerH < 42 {
+			innerH = 42
+		}
+
+		y := pdf.GetY()
+		// Fond coloré du bloc
+		pdf.SetFillColor(cbg.r, cbg.g, cbg.b)
+		pdf.Rect(r.mL, y, r.cW, innerH, "F")
+		// Barre d'urgence à gauche
+		pdf.SetFillColor(cc.r, cc.g, cc.b)
+		pdf.Rect(r.mL, y, 6, innerH, "F")
+
+		// Badge urgence (coin supérieur droit)
+		badgeW := 28.0
+		pdf.SetFillColor(cc.r, cc.g, cc.b)
+		pdf.Rect(r.mL+r.cW-badgeW, y, badgeW, 8, "F")
+		pdf.SetXY(r.mL+r.cW-badgeW, y+1.5)
+		pdf.SetFont("Helvetica", "B", 7)
+		pdf.SetTextColor(255, 255, 255)
+		pdf.CellFormat(badgeW-2, 5, label, "0", 0, "C", false, 0, "")
+
+		// Titre du cas
+		pdf.SetXY(r.mL+10, y+2)
+		pdf.SetFont("Helvetica", "B", 8.5)
+		pdf.SetTextColor(cc.r, cc.g, cc.b)
+		pdf.CellFormat(r.cW-badgeW-14, 6, toL1(casLabel), "", 1, "L", false, 0, "")
+
+		// Description courte
+		if etat.Description != "" {
+			pdf.SetX(r.mL + 10)
+			pdf.SetFont("Helvetica", "I", 7.5)
+			pdf.SetTextColor(80, 90, 110)
+			pdf.MultiCell(r.cW-20, 4, toL1(etat.Description), "", "L", false)
+		}
+
+		pdf.Ln(2)
+
+		// Deux colonnes : Signes à rechercher | Actions recommandées
+		if etat.Signes != "" || etat.Actions != "" {
+			colW := (r.cW - 20) / 2
+
+			// En-têtes colonnes
+			pdf.SetX(r.mL + 10)
+			pdf.SetFont("Helvetica", "B", 7)
+			pdf.SetTextColor(colGrey.r, colGrey.g, colGrey.b)
+			pdf.CellFormat(colW, 4.5, "SIGNES A RECHERCHER", "", 0, "L", false, 0, "")
+			pdf.CellFormat(colW, 4.5, "ACTIONS RECOMMANDEES", "", 1, "L", false, 0, "")
+
+			// Ligne séparatrice fine
+			pdf.SetDrawColor(cc.r, cc.g, cc.b)
+			pdf.SetLineWidth(0.2)
+			lx := r.mL + 10
+			ly := pdf.GetY()
+			pdf.Line(lx, ly, lx+colW*2, ly)
+			pdf.Ln(1)
+
+			// Contenu des deux colonnes (rendu avec MultiCell successifs)
+			pdf.SetFont("Helvetica", "", 7.5)
+			pdf.SetTextColor(colText.r, colText.g, colText.b)
+
+			xL := r.mL + 10
+			xR := r.mL + 10 + colW
+			yStart := pdf.GetY()
+
+			// Colonne gauche (Signes)
+			pdf.SetXY(xL, yStart)
+			pdf.MultiCell(colW-2, 4, toL1(etat.Signes), "", "L", false)
+			yAfterLeft := pdf.GetY()
+
+			// Colonne droite (Actions)
+			pdf.SetXY(xR, yStart)
+			pdf.MultiCell(colW-2, 4, toL1(etat.Actions), "", "L", false)
+			yAfterRight := pdf.GetY()
+
+			// Positionner après le plus bas des deux colonnes
+			if yAfterRight > yAfterLeft {
+				pdf.SetY(yAfterRight)
+			} else {
+				pdf.SetY(yAfterLeft)
+			}
+		}
+
+		pdf.Ln(6)
+	}
+}
+
 // ─── Section preuves kernel ───────────────────────────────────────────────────
 
 // kernelEvidenceSection affiche les événements kernel les plus significatifs.
@@ -2164,22 +2303,70 @@ func (r *AIReporter) kernelEvidenceSection(evs []models.KernelEvent) {
 
 	r.subSection(fmt.Sprintf("Evenements significatifs detectes (%d)", len(evs)))
 
+	// Traduction des types d'événements onemon vers des labels lisibles
+	onemonLabels := map[string]string{
+		"onemon.NetworkFlow":    "Connexion reseau",
+		"onemon.NetworkListen":  "Ecoute reseau",
+		"onemon.NetworkConnect": "Connexion sortante",
+		"onemon.Registry":       "Acces registre",
+		"onemon.RegistrySet":    "Ecriture registre",
+		"onemon.RegistryCreate": "Creation registre",
+		"onemon.File":           "Acces fichier",
+		"onemon.FileCreate":     "Creation fichier",
+		"onemon.FileDelete":     "Suppression fichier",
+		"onemon.Process":        "Creation processus",
+		"onemon.ProcessCreate":  "Lancement processus",
+		"onemon.Thread":         "Creation thread",
+		"onemon.Inject":         "Injection memoire",
+		"file_create":           "Creation fichier",
+		"net_connect":           "Connexion reseau",
+		"net_listen":            "Ecoute reseau",
+		"reg_set_value":         "Ecriture registre",
+		"process_create":        "Lancement processus",
+		"file_delete":           "Suppression fichier",
+	}
+	translateAction := func(action string) string {
+		if label, ok := onemonLabels[action]; ok {
+			return label
+		}
+		// Nettoyer le préfixe onemon. si présent
+		if strings.HasPrefix(action, "onemon.") {
+			return strings.TrimPrefix(action, "onemon.")
+		}
+		return action
+	}
+
 	rows := make([][]string, 0, len(evs))
 	for _, ev := range evs {
 		t := ""
 		if ev.TimeMs > 0 {
 			t = fmt.Sprintf("+%ds", ev.TimeMs/1000)
 		}
+		// Nom du processus : extraire le basename
 		img := ev.Image
-		if len(img) > 20 {
+		if img == "" {
+			img = "—"
+		} else if len(img) > 25 {
 			parts := strings.Split(strings.ReplaceAll(img, "\\", "/"), "/")
 			img = parts[len(parts)-1]
 		}
-		target := ev.Target
-		if len(target) > 50 {
-			target = "..." + target[len(target)-47:]
+		// Action traduite
+		action := translateAction(ev.Action)
+		if len(action) > 22 {
+			action = action[:22]
 		}
-		rows = append(rows, []string{t, img, ev.Action, target})
+		// Cible : Target en priorité, sinon Details comme fallback
+		target := ev.Target
+		if target == "" && ev.Details != "" {
+			target = ev.Details
+		}
+		if len(target) > 55 {
+			target = "..." + target[len(target)-52:]
+		}
+		if target == "" {
+			target = "—"
+		}
+		rows = append(rows, []string{t, img, action, target})
 	}
 
 	// Tableau compact: temps | processus | action | cible
@@ -2188,7 +2375,7 @@ func (r *AIReporter) kernelEvidenceSection(evs []models.KernelEvent) {
 	pdf.SetFillColor(30, 40, 70)
 	pdf.SetTextColor(255, 255, 255)
 	headers := []string{"T+", "Processus", "Action", "Cible"}
-	widths := []float64{12, 32, 28, r.cW - 76}
+	widths := []float64{14, 35, 30, r.cW - 83}
 	for i, h := range headers {
 		pdf.CellFormat(widths[i], 5.5, h, "0", 0, "C", true, 0, "")
 	}
@@ -2198,6 +2385,15 @@ func (r *AIReporter) kernelEvidenceSection(evs []models.KernelEvent) {
 		if pdf.GetY() > r.pageH-25 {
 			pdf.AddPage()
 			r.drawHeader()
+			// Ré-afficher les en-têtes sur la nouvelle page
+			pdf.SetFont("Helvetica", "B", 7)
+			pdf.SetFillColor(30, 40, 70)
+			pdf.SetTextColor(255, 255, 255)
+			for j, h := range headers {
+				pdf.CellFormat(widths[j], 5.5, h, "0", 0, "C", true, 0, "")
+			}
+			pdf.Ln(-1)
+			pdf.SetFont("Helvetica", "", 6.5)
 		}
 		bg := i%2 == 0
 		if bg {

@@ -22,6 +22,7 @@ type AppConfig struct {
 	APIToken       string `json:"api_token"`
 	Proxy          string `json:"proxy"`
 	UIPort         string `json:"ui_port"`
+	LlamaPort      string `json:"llama_port,omitempty"`      // port llama-server (défaut: 11434)
 	AbuseIPDBKey   string `json:"abuseipdb_key,omitempty"`   // optionnel
 	UseGeoIP       bool   `json:"use_geoip,omitempty"`       // geolocalisation IP (ip-api.com)
 	SandboxTimeout int    `json:"sandbox_timeout,omitempty"` // durée analyse sandbox en secondes (défaut: 300)
@@ -48,6 +49,9 @@ var App = func() AppConfig {
 	}
 	if cfg.UIPort == "" {
 		cfg.UIPort = "8766"
+	}
+	if cfg.LlamaPort == "" {
+		cfg.LlamaPort = "11434" // port standard Ollama — hors plage réservée Hyper-V/Docker
 	}
 
 	// Déchiffrement transparent des secrets

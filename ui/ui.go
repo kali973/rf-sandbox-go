@@ -803,7 +803,16 @@ func generateWithChain(
 		return false, "", nil
 	}
 
-	forensicReport, err := ai.ParseForensicResponse(rawM2)
+	// Extraire le score sandbox pour plafonner le score IA
+	sbScore := 0
+	for _, res := range results {
+		if res.Score > 0 {
+			sbScore = res.Score
+			break
+		}
+	}
+
+	forensicReport, err := ai.ParseForensicResponse(rawM2, sbScore)
 	if err != nil {
 		progress(ai.CWarn(fmt.Sprintf("[AI-CHAIN] M2 parsing JSON échoué (%v) — retry M2 avec prompt étendu", err)))
 		// Retry avec le prompt complet BuildForensicPrompt (plus de contexte)
@@ -813,7 +822,7 @@ func generateWithChain(
 			progress(ai.CWarn(fmt.Sprintf("[AI-CHAIN] Retry M2 échoué (%v) — abandon chaîne", errRetry)))
 			return false, "", nil
 		}
-		forensicReport, err = ai.ParseForensicResponse(rawM2Retry)
+		forensicReport, err = ai.ParseForensicResponse(rawM2Retry, sbScore)
 		if err != nil {
 			progress(ai.CWarn(fmt.Sprintf("[AI-CHAIN] Retry M2 parsing JSON toujours échoué — abandon chaîne")))
 			return false, "", nil
@@ -1003,7 +1012,15 @@ func generateWithAI(cfg ServerConfig, results []*models.AnalysisResult, outputPa
 	progress(ai.CGrey(fmt.Sprintf("[AI] Génération terminée en %s (%d chars)", genElapsed.Round(time.Second), len(rawResponse))))
 
 	progress(ai.CInfo("[AI] Génération terminée — parsing JSON..."))
-	forensicReport, err := ai.ParseForensicResponse(rawResponse)
+	// Extraire le score sandbox pour plafonner le score IA
+	sbScoreMono := 0
+	for _, res := range results {
+		if res.Score > 0 {
+			sbScoreMono = res.Score
+			break
+		}
+	}
+	forensicReport, err := ai.ParseForensicResponse(rawResponse, sbScoreMono)
 	if err != nil {
 		// Parsing échoué avec Mistral 7B — tenter Qwen2.5-14B si disponible dans moteur/models/
 		preview := rawResponse
@@ -1024,7 +1041,7 @@ func generateWithAI(cfg ServerConfig, results []*models.AnalysisResult, outputPa
 				return false
 			}
 			progress(ai.CInfo("[AI-FALLBACK] Génération Qwen terminée — parsing JSON..."))
-			forensicReport, err = ai.ParseForensicResponse(rawResponse)
+			forensicReport, err = ai.ParseForensicResponse(rawResponse, sbScoreMono)
 			if err != nil {
 				preview2 := rawResponse
 				if len(preview2) > 300 {
@@ -1057,7 +1074,7 @@ func generateWithAI(cfg ServerConfig, results []*models.AnalysisResult, outputPa
 					log.Printf(ai.CErr("[AI-FALLBACK] Génération Qwen échouée: %v"), err2)
 					return
 				}
-				report2, err2 := ai.ParseForensicResponse(raw2)
+				report2, err2 := ai.ParseForensicResponse(raw2, sbScoreMono)
 				if err2 != nil {
 					log.Printf(ai.CErr("[AI-FALLBACK] Parsing Qwen échoué: %v"), err2)
 					return

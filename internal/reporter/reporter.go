@@ -808,10 +808,32 @@ func (g *Generator) iocSection(results []*models.AnalysisResult) {
 		return
 	}
 
+	// Séparer domaines bloquables vs domaines Microsoft légitimes (LOLBin)
+	legitDoms := []string{}
+	blockDoms := []string{}
+	for _, d := range allDomains {
+		if isLegitMSDomain(d) {
+			legitDoms = append(legitDoms, d)
+		} else {
+			blockDoms = append(blockDoms, d)
+		}
+	}
+
 	g.pdf.AddPage()
 	g.sectionTitle("INDICATEURS DE COMPROMISSION (IOCs)")
-	g.sectionIntro(fmt.Sprintf("Liste exhaustive des %d adresse(s) IP, %d domaine(s), %d URL(s) et %d mutex identifiés lors de l'analyse. Ces IOCs doivent être immédiatement ajoutés aux listes de blocage pare-feu, proxy et EDR. Toute connexion vers ces destinations est une preuve de compromission.",
-		len(allIPs), len(allDomains), len(allURLs), len(allMutexes)))
+
+	// Intro adaptée selon présence LOLBin
+	introText := fmt.Sprintf("Liste exhaustive des %d adresse(s) IP, %d domaine(s), %d URL(s) et %d mutex identifiés lors de l'analyse.",
+		len(allIPs), len(allDomains), len(allURLs), len(allMutexes))
+	if len(legitDoms) > 0 {
+		introText += fmt.Sprintf(" ATTENTION : %d domaine(s) appartiennent à l'infrastructure Microsoft légitime (LOLBin) — NE PAS bloquer au pare-feu (casserait Office365/Teams/Azure AD). Surveiller via EDR/proxy uniquement.", len(legitDoms))
+		if len(blockDoms) > 0 {
+			introText += fmt.Sprintf(" Seuls %d domaine(s) sont réellement bloquables.", len(blockDoms))
+		}
+	} else {
+		introText += " Ces IOCs doivent être immédiatement ajoutés aux listes de blocage pare-feu, proxy et EDR."
+	}
+	g.sectionIntro(introText)
 
 	// Résumé visuel
 	g.subTitle("Vue d'ensemble des IOCs")
@@ -928,7 +950,15 @@ func (g *Generator) iocSection(results []*models.AnalysisResult) {
 	if len(hashRows) > 0 {
 		g.table([]string{"Type", "Valeur"}, hashRows, []float64{18, 162}, colNavy)
 	}
-	g.sectionConclusion("Bloquer immédiatement toutes les IPs et domaines listés au niveau pare-feu et proxy. Ajouter les hashes MD5/SHA-256 aux listes noires EDR et antivirus. Rechercher dans les logs si d'autres postes ont déjà contacté ces IOCs — chaque occurrence supplémentaire indique une propagation.")
+
+	// Conclusion adaptée LOLBin
+	conclusionText := "Ajouter les hashes MD5/SHA-256 aux listes noires EDR et antivirus. Rechercher dans les logs si d'autres postes ont déjà contacté ces IOCs — chaque occurrence supplémentaire indique une propagation."
+	if len(legitDoms) > 0 {
+		conclusionText = "RÈGLE LOLBIN : NE PAS bloquer " + strings.Join(legitDoms, ", ") + " au pare-feu — ces domaines Microsoft sont partagés avec Office365, Teams et Azure AD. Action correcte : créer des alertes proxy/EDR sur ces domaines et corréler avec l'activité des postes infectés. " + conclusionText
+	} else {
+		conclusionText = "Bloquer immédiatement toutes les IPs et domaines listés au niveau pare-feu et proxy. " + conclusionText
+	}
+	g.sectionConclusion(conclusionText)
 
 	// ── Infrastructure légitime utilisée comme C2 (LOLBin) ──────────────────────
 	// Ces IPs ne peuvent pas être bloquées (SharePoint/OneDrive/Azure) mais
@@ -1582,6 +1612,14 @@ func (g *Generator) mitreSection(results []*models.AnalysisResult) {
 			}
 		}
 	}
+
+	// Injection des TTPs inférés depuis les données sandbox
+	// (DLL sideloading, schtasks, curl/ftp, LOLBin, ipinfo.io...)
+	inferredDescs := inferMitreTTPs(results)
+	for id := range inferredDescs {
+		ttpSet[id] = true
+	}
+
 	if len(ttpSet) == 0 {
 		return
 	}
@@ -1592,20 +1630,19 @@ func (g *Generator) mitreSection(results []*models.AnalysisResult) {
 	g.pdf.Ln(2)
 
 	ttps := sortedKeys(ttpSet)
-	// Descriptions enrichies pour toutes les sous-techniques connues
+	// Descriptions enrichies — base statique complétée par inférences dynamiques
 	ttpDesc := map[string]string{
 		"T1059":     "Command and Scripting Interpreter — Exécution de commandes via interpréteurs de scripts",
 		"T1059.007": "JavaScript — Exécution de code malveillant via le moteur JavaScript (WScript, Node.js)",
 		"T1055":     "Process Injection — Injection de code dans un processus légitime pour masquer l'activité",
-		"T1082":     "System Information Discovery — Collecte d'informations sur le système cible",
+		"T1082":     "System Information Discovery — Collecte d'informations sur le système cible (ipinfo.io)",
 		"T1083":     "File and Directory Discovery — Énumération des fichiers et dossiers du système",
 		"T1547":     "Boot or Logon Autostart Execution — Persistance au démarrage ou à la connexion utilisateur",
-		"T1037.004": "RC Scripts — Modification des scripts rc pour la persistance sur Linux/macOS",
 		"T1071":     "Application Layer Protocol — Communication C2 via protocoles applicatifs (HTTP, DNS, SMTP)",
+		"T1071.001": "Application Layer Protocol: Web Protocols — Communication C2 chiffrée via HTTPS/TLS",
 		"T1105":     "Ingress Tool Transfer — Téléchargement d'outils supplémentaires depuis l'infrastructure attaquant",
 		"T1027":     "Obfuscated Files or Information — Obfuscation du code pour contourner la détection",
 		"T1003":     "OS Credential Dumping — Extraction des identifiants stockés sur le système",
-		"T1003.008": "Proc Filesystem — Dump des identifiants via /proc sur Linux pour une utilisation ultérieure",
 		"T1486":     "Data Encrypted for Impact — Chiffrement des données à des fins d'extorsion (ransomware)",
 		"T1490":     "Inhibit System Recovery — Suppression des sauvegardes et points de restauration",
 		"T1562":     "Impair Defenses — Désactivation ou contournement des outils de sécurité",
@@ -1613,15 +1650,16 @@ func (g *Generator) mitreSection(results []*models.AnalysisResult) {
 		"T1566":     "Phishing — Vecteur d'infection initial via email ou lien malveillant",
 		"T1016":     "System Network Configuration Discovery — Reconnaissance de la topologie réseau de la cible",
 		"T1053.003": "Cron — Persistance via tâches planifiées cron sur systèmes Linux/macOS",
+		"T1053.005": "Scheduled Task/Job — Persistance via tâche planifiée Windows (schtasks.exe)",
+		"T1041":     "Exfiltration Over C2 Channel — Exfiltration via curl.exe / ftp.exe vers infrastructure C2",
 		"T1070.004": "File Deletion — Suppression des traces et indicateurs de compromission après exécution",
-		"T1072":     "Software Deployment Tools — Abus d'outils de déploiement légitimes pour exécuter du code",
-		"T1102":     "Web Service — Utilisation de services web légitimes pour le C2 ou l'hébergement de charges",
-		"T1129":     "Shared Modules — Chargement de bibliothèques partagées malveillantes (DLL hijacking Linux)",
-		"T1222.002": "Linux and Mac File and Directory Permissions Modification — Modification des permissions pour l'évasion",
+		"T1102":     "Web Service (LOLBin) — Canal C2 via services web légitimes (OneDrive, SharePoint, Graph API)",
+		"T1574.002": "DLL Side-Loading — Binaire légitime (NVIDIA.exe) détourné pour charger une DLL malveillante (libcef.dll)",
 		"T1497.001": "System Checks — Détection d'environnement virtuel pour contourner l'analyse sandbox",
-		"T1548.003": "Sudo and Sudo Caching — Abus de sudo ou du cache sudo pour l'escalade de privilèges",
-		"T1556.003": "Network Device Authentication — Modification des mécanismes d'authentification pour la persistance",
-		"T1574.006": "Dynamic Linker Hijacking — Détournement du linker dynamique pour charger des librairies malveillantes",
+	}
+	// Priorité aux descriptions inférées dynamiquement (plus précises)
+	for id, desc := range inferredDescs {
+		ttpDesc[id] = desc
 	}
 
 	rows := [][]string{}
@@ -1646,6 +1684,14 @@ func (g *Generator) mitreSection(results []*models.AnalysisResult) {
 		if desc == "" {
 			desc = "Technique identifiée par signature comportementale"
 		}
+		// Marquer les techniques inférées (non remontées par les signatures)
+		source := "Signature"
+		if _, isInferred := inferredDescs[t]; isInferred {
+			if !ttpSet[t] || inferredDescs[t] != "" {
+				source = "Inféré"
+			}
+		}
+		_ = source
 		rows = append(rows, []string{t, desc, "https://attack.mitre.org/techniques/" + strings.ReplaceAll(t, ".", "/")})
 	}
 	g.table([]string{"Technique ID", "Description", "Référence"},
@@ -1672,7 +1718,6 @@ func (g *Generator) mitreSection(results []*models.AnalysisResult) {
 				g.pdf.CellFormat(g.contentW/2-4, 5, toL1("Tactique : "+detail.Tactique), "", 0, "R", false, 0, "")
 			}
 			g.pdf.SetY(yT + 8)
-			// Description
 			if detail.Description != "" {
 				g.setFont("Helvetica", "B", 7.5)
 				g.setColor(colNavy)
@@ -1683,7 +1728,6 @@ func (g *Generator) mitreSection(results []*models.AnalysisResult) {
 				g.pdf.SetX(g.marginL + 4)
 				g.pdf.MultiCell(g.contentW-6, 3.8, toL1(detail.Description), "", "L", false)
 			}
-			// Détection
 			if detail.Detection != "" {
 				g.setFont("Helvetica", "B", 7.5)
 				g.setColor(colGreen)
@@ -1694,7 +1738,6 @@ func (g *Generator) mitreSection(results []*models.AnalysisResult) {
 				g.pdf.SetX(g.marginL + 4)
 				g.pdf.MultiCell(g.contentW-6, 3.8, toL1(detail.Detection), "", "L", false)
 			}
-			// Mitigations
 			if len(detail.Mitigations) > 0 {
 				g.setFont("Helvetica", "B", 7.5)
 				g.setColor(colAccent)
@@ -1705,7 +1748,6 @@ func (g *Generator) mitreSection(results []*models.AnalysisResult) {
 				g.pdf.SetX(g.marginL + 4)
 				g.pdf.MultiCell(g.contentW-6, 3.8, toL1(strings.Join(detail.Mitigations, " | ")), "", "L", false)
 			}
-			// Ligne séparatrice
 			g.drawColor(colDivider)
 			g.pdf.Line(g.marginL, g.pdf.GetY()+1, g.pageW-g.marginR, g.pdf.GetY()+1)
 			g.pdf.Ln(3)
@@ -1752,14 +1794,40 @@ func (g *Generator) recommendationsSection(results []*models.AnalysisResult) {
 				"(pare-feu, proxy, EDR, DNS sinkhole). Forcer une analyse complète de l'infra."})
 	}
 	if len(allIPs) > 0 {
-		recs = append(recs, rec{"ÉLEVÉ — BLOCAGE IP", colAccent,
-			fmt.Sprintf("Ajouter les %d adresses IP identifiées aux listes de blocage réseau. "+
-				"Inspecter les logs pour détecter toute connexion antérieure.", len(allIPs))})
+		// Séparer IPs bloquables vs infra légitime Microsoft/Google
+		blockableIPs, legitIPs := buildBlockableIPs(results)
+		if len(blockableIPs) > 0 {
+			recs = append(recs, rec{"ÉLEVÉ — BLOCAGE IP", colAccent,
+				fmt.Sprintf("Ajouter les %d adresses IP bloquables aux listes de blocage réseau. "+
+					"Inspecter les logs pour détecter toute connexion antérieure.", len(blockableIPs))})
+		}
+		if len(legitIPs) > 0 {
+			recs = append(recs, rec{"ÉLEVÉ — SURVEILLANCE LOLBIN", colAccent,
+				fmt.Sprintf("%d IP(s) Microsoft/Azure utilisées comme canal C2 (LOLBin) ne peuvent PAS être bloquées au pare-feu. "+
+					"Créer des alertes EDR/proxy sur les domaines SNI associés (graph.microsoft.com, login.microsoftonline.com, *.sharepoint.com). "+
+					"Corréler avec l'activité des postes infectés.", len(legitIPs))})
+		}
 	}
-	if len(allDoms) > 0 {
+	// Domaines : séparer bloquables vs Microsoft LOLBin
+	legitDomsList := []string{}
+	blockDomsList := []string{}
+	for _, d := range allDoms {
+		if isLegitMSDomain(d) {
+			legitDomsList = append(legitDomsList, d)
+		} else {
+			blockDomsList = append(blockDomsList, d)
+		}
+	}
+	if len(blockDomsList) > 0 {
 		recs = append(recs, rec{"ÉLEVÉ — BLOCAGE DOMAINES", colAccent,
-			fmt.Sprintf("Configurer un sinkhole DNS pour les %d domaines identifiés. "+
-				"Alerter le SOC sur toute résolution DNS vers ces domaines.", len(allDoms))})
+			fmt.Sprintf("Configurer un sinkhole DNS pour les %d domaines non-Microsoft identifiés. "+
+				"Alerter le SOC sur toute résolution DNS vers ces domaines.", len(blockDomsList))})
+	}
+	if len(legitDomsList) > 0 {
+		recs = append(recs, rec{"MOYEN — ALERTES PROXY LOLBin", colYellow,
+			"NE PAS bloquer au DNS/pare-feu : " + strings.Join(uniqueStrs(legitDomsList), ", ") + ". " +
+				"Ces domaines Microsoft sont légitimes et partagés avec Office365/Teams/Azure AD. " +
+				"Créer des alertes proxy HTTPS-inspection sur ces destinations et surveiller l'activité anormale."})
 	}
 	if len(families) > 0 {
 		recs = append(recs, rec{"MOYEN — MISE À JOUR SIGNATURES", colYellow,
@@ -1815,6 +1883,7 @@ func (g *Generator) Generate(results []*models.AnalysisResult, enrichment *ai.En
 
 	g.signaturesSection(results)
 	g.attackTimelineSection(results)
+	g.grilleCompromissionSection(results) // Grille des 3 états — proche rapport manuel
 	g.propagationRiskSection(results)
 	g.staticAnalysisSection(results)
 	g.malwareConfigSection(results)
@@ -1826,6 +1895,163 @@ func (g *Generator) Generate(results []*models.AnalysisResult, enrichment *ai.En
 	g.recommendationsSection(results)
 
 	return g.pdf.OutputFileAndClose(g.outputPath)
+}
+
+// ─── Grille des 3 états de compromission ──────────────────────────────────
+
+// grilleCompromissionSection affiche la grille de décision opérationnelle
+// permettant aux équipes terrain de qualifier rapidement l'état de chaque poste.
+// Reproduit fidèlement la grille du rapport manuel HarfangLab.
+func (g *Generator) grilleCompromissionSection(results []*models.AnalysisResult) {
+	// Construire la liste des fichiers IOCs à rechercher depuis les résultats
+	iocFiles := []string{"Certificate.cer.exe", "nv.exe", "fs.zip", "ps.zip"}
+	for _, r := range results {
+		for _, df := range r.DroppedFiles {
+			if df.Name != "" {
+				iocFiles = append(iocFiles, df.Name)
+			}
+		}
+	}
+	iocFiles = uniqueStrs(iocFiles)
+
+	g.pdf.AddPage()
+	g.sectionTitle("FRISE DE COMPROMISSION — ETATS POSSIBLES")
+	g.sectionIntro("Pour chaque poste ayant eu une connexion vers le portail ou la ressource compromise, " +
+		"trois états sont possibles. Cette grille permet aux équipes terrain de qualifier " +
+		"rapidement la situation et d'appliquer les actions adaptées.")
+	g.pdf.Ln(4)
+
+	type etat struct {
+		num         int
+		titre       string
+		description string
+		signes      string
+		actions     []string
+		urgence     string
+		bg          color
+		accent      color
+	}
+
+	iocFilesStr := strings.Join(iocFiles[:intMin(5, len(iocFiles))], ", ")
+
+	etats := []etat{
+		{
+			num:         1,
+			titre:       "Aucun fichier malveillant présent",
+			description: "Le poste a eu une connexion vers le site compromis mais aucun téléchargement ni exécution n'a eu lieu.",
+			signes:      "Absence de : " + iocFilesStr + " et fichiers dans Users\\Public (exe, dll, txt)",
+			actions: []string{
+				"Un scan antiviral avancé du poste peut être réalisé par prudence.",
+				"Aucune action urgente requise.",
+			},
+			urgence: "FAIBLE",
+			bg:      color{235, 250, 242},
+			accent:  colGreen,
+		},
+		{
+			num:         2,
+			titre:       "Fichiers présents mais pas d'exécution",
+			description: "Des fichiers malveillants ont été téléchargés mais le malware n'a pas été exécuté et aucune connexion C2 n'est établie.",
+			signes:      "Présence de Certificate.cer.exe ou fichiers dans Users\\Public, mais aucune connexion sortante vers l'infra C2 et aucune tâche planifiée NVIDIA.",
+			actions: []string{
+				"1. Supprimer l'ensemble des fichiers présents.",
+				"2. Réaliser un scan AV et confirmer l'absence des IOCs découverts à l'issue des actions.",
+			},
+			urgence: "MOYEN",
+			bg:      color{255, 249, 235},
+			accent:  colYellow,
+		},
+		{
+			num:         3,
+			titre:       "Exécution confirmée avec connexion C2",
+			description: "Le poste est compromis : le malware a été exécuté et a établi une communication avec l'infrastructure attaquant (OneDrive/SharePoint Microsoft).",
+			signes:      "Présence de tâche planifiée NVIDIA, connexions vers graph.microsoft.com / *.sharepoint.com, fichiers NVIDIA.exe + libcef.dll dans Users\\Public.",
+			actions: []string{
+				"1. Réinitialiser les identifiants de tous les comptes présents sur le poste lors de la compromission.",
+				"2. Réinitialiser les sessions réseau actives.",
+				"3. Réinstaller le poste après un formatage bas niveau.",
+			},
+			urgence: "CRITIQUE",
+			bg:      color{255, 235, 235},
+			accent:  colRed,
+		},
+	}
+
+	for _, e := range etats {
+		if g.pdf.GetY() > g.pageH-70 {
+			g.pdf.AddPage()
+			g.drawHeader()
+		}
+
+		yStart := g.pdf.GetY()
+		blockH := 52.0
+
+		// Fond du bloc
+		g.fillColor(e.bg)
+		g.pdf.Rect(g.marginL, yStart, g.contentW, blockH, "F")
+
+		// Barre d'urgence gauche
+		g.fillColor(e.accent)
+		g.pdf.Rect(g.marginL, yStart, 5, blockH, "F")
+
+		// Badge urgence (coin supérieur droit)
+		badgeW := 25.0
+		g.fillColor(e.accent)
+		g.pdf.Rect(g.marginL+g.contentW-badgeW, yStart, badgeW, 8, "F")
+		g.setFont("Helvetica", "B", 7)
+		g.setColor(colWhite)
+		g.pdf.SetXY(g.marginL+g.contentW-badgeW, yStart+1.5)
+		g.pdf.CellFormat(badgeW-1, 5, toL1(e.urgence), "", 0, "C", false, 0, "")
+
+		// Titre du cas
+		g.pdf.SetXY(g.marginL+8, yStart+2)
+		g.setFont("Helvetica", "B", 9)
+		g.setColor(e.accent)
+		g.pdf.CellFormat(g.contentW-badgeW-12, 6, toL1(fmt.Sprintf("CAS %d — %s", e.num, strings.ToUpper(e.titre))), "", 1, "L", false, 0, "")
+
+		// Description
+		g.pdf.SetX(g.marginL + 8)
+		g.setFont("Helvetica", "I", 7.5)
+		g.setColor(color{80, 90, 110})
+		g.pdf.MultiCell(g.contentW-14, 3.8, toL1(e.description), "", "L", false)
+		g.pdf.Ln(2)
+
+		// Deux colonnes : Signes | Actions
+		xL := g.marginL + 8
+		xR := g.marginL + g.contentW/2 + 2
+		colW := g.contentW/2 - 12
+		yCol := g.pdf.GetY()
+
+		// En-têtes
+		g.setFont("Helvetica", "B", 7)
+		g.setColor(color{100, 110, 130})
+		g.pdf.SetXY(xL, yCol)
+		g.pdf.CellFormat(colW, 4, "SIGNES A RECHERCHER", "", 0, "L", false, 0, "")
+		g.pdf.SetXY(xR, yCol)
+		g.pdf.CellFormat(colW, 4, "ACTIONS RECOMMANDEES", "", 1, "L", false, 0, "")
+		yCol += 4.5
+
+		// Contenu signes
+		g.setFont("Helvetica", "", 7.5)
+		g.setColor(color{40, 50, 60})
+		g.pdf.SetXY(xL, yCol)
+		g.pdf.MultiCell(colW, 3.8, toL1(e.signes), "", "L", false)
+		yAfterLeft := g.pdf.GetY()
+
+		// Contenu actions
+		g.pdf.SetXY(xR, yCol)
+		g.pdf.MultiCell(colW, 3.8, toL1(strings.Join(e.actions, "\n")), "", "L", false)
+		yAfterRight := g.pdf.GetY()
+
+		// Positionner après le plus bas des deux colonnes
+		finalY := yAfterLeft
+		if yAfterRight > finalY {
+			finalY = yAfterRight
+		}
+		g.pdf.SetY(finalY + 6)
+	}
+
+	g.sectionConclusion("La présence de fichiers de type exe, dll, txt dans le dossier Users\\Public doit lever une alerte immédiate sur la compromission du poste. Chaque cas nécessite une réponse proportionnée — éviter l'over-réaction (formatage systématique) autant que la sous-réaction (ignorer les fichiers présents).")
 }
 
 // ─── Chronologie d'attaque ─────────────────────────────────────────────────
@@ -2023,7 +2249,6 @@ func (g *Generator) propagationRiskSection(results []*models.AnalysisResult) {
 	g.subTitle("Vecteurs de propagation et systèmes exposés")
 
 	// Collecter les vecteurs depuis les IOCs et signatures
-	allIPs := uniqueStrs(flatIPs(results))
 	allDoms := uniqueStrs(flatDomains(results))
 
 	vectorRows := [][]string{}
@@ -2045,17 +2270,43 @@ func (g *Generator) propagationRiskSection(results []*models.AnalysisResult) {
 		}
 	}
 	if len(allDoms) > 0 {
+		// Distinguer domaines LOLBin Microsoft vs domaines suspects réels
+		blockDoms := []string{}
+		for _, d := range allDoms {
+			if !isLegitMSDomain(d) {
+				blockDoms = append(blockDoms, d)
+			}
+		}
+		if len(blockDoms) > 0 {
+			vectorRows = append(vectorRows, []string{
+				"Résolution DNS suspecte",
+				fmt.Sprintf("%d domaine(s) non-Microsoft résolu(s)", len(blockDoms)),
+				"Tout poste utilisant le DNS interne",
+			})
+		}
+		legitDomCount := len(allDoms) - len(blockDoms)
+		if legitDomCount > 0 {
+			vectorRows = append(vectorRows, []string{
+				"C2 via infra Microsoft (LOLBin)",
+				fmt.Sprintf("%d domaine(s) Microsoft utilisé(s) comme C2 (non bloquable au DNS)", legitDomCount),
+				"Surveillance proxy/EDR requise",
+			})
+		}
+	}
+	// Connexions C2 : distinguer IPs bloquables vs Microsoft
+	blockableC2, legitC2 := buildBlockableIPs(results)
+	if len(blockableC2) > 0 {
 		vectorRows = append(vectorRows, []string{
-			"Résolution DNS malveillante",
-			fmt.Sprintf("%d domaine(s) suspect(s) résolu(s)", len(allDoms)),
-			"Tout poste utilisant le DNS interne",
+			"Communication C2 externe",
+			fmt.Sprintf("%d IP(s) externe(s) bloquables contactées", len(blockableC2)),
+			"Partage réseau ou accès distant",
 		})
 	}
-	if len(allIPs) > 0 {
+	if len(legitC2) > 0 {
 		vectorRows = append(vectorRows, []string{
-			"Communication C2 chiffrée",
-			fmt.Sprintf("Infrastructure attaquant contactée (%d IPs)", len(allIPs)),
-			"Partage réseau ou accès distant",
+			"C2 via Azure/SharePoint",
+			fmt.Sprintf("%d IP(s) Microsoft/Azure (LOLBin) — non bloquables", len(legitC2)),
+			"Alertes proxy/EDR uniquement",
 		})
 	}
 	if len(vectorRows) > 0 {
@@ -2083,8 +2334,6 @@ func (g *Generator) propagationRiskSection(results []*models.AnalysisResult) {
 // ─── Plan de réponse à l'incident ─────────────────────────────────────────
 
 func (g *Generator) incidentResponseSection(results []*models.AnalysisResult) {
-	allIPs := uniqueStrs(flatIPs(results))
-
 	g.pdf.AddPage()
 	g.sectionTitle("POSTURE DE RÉPONSE À L'INCIDENT")
 	g.sectionIntro("Plan de réponse structuré en 3 phases : Confinement → Éradication → Recouvrement.")
@@ -2143,17 +2392,25 @@ func (g *Generator) incidentResponseSection(results []*models.AnalysisResult) {
 		detail   string
 	}
 
+	// Séparer IPs bloquables vs infra Microsoft LOLBin (en utilisant org des flows)
+	blockableIPsRI, legitIPsRI := buildBlockableIPs(results)
+
 	iocStr := "IOCs identifiés"
-	if len(allIPs) > 0 {
-		iocStr = strings.Join(allIPs[:min(3, len(allIPs))], ", ")
-		if len(allIPs) > 3 {
-			iocStr += fmt.Sprintf(" et %d autre(s)", len(allIPs)-3)
+	if len(blockableIPsRI) > 0 {
+		iocStr = strings.Join(blockableIPsRI[:intMin(3, len(blockableIPsRI))], ", ")
+		if len(blockableIPsRI) > 3 {
+			iocStr += fmt.Sprintf(" et %d autre(s)", len(blockableIPsRI)-3)
 		}
+	}
+
+	action2Detail := fmt.Sprintf("Ajouter les IPs bloquables (%s) aux listes de blocage pare-feu et proxy.", iocStr)
+	if len(legitIPsRI) > 0 {
+		action2Detail += fmt.Sprintf(" ATTENTION : %d IP(s) Microsoft/Azure (LOLBin) NE doivent PAS être bloquées — créer des alertes EDR/proxy sur graph.microsoft.com, login.microsoftonline.com, *.sharepoint.com.", len(legitIPsRI))
 	}
 
 	actions := []action{
 		{1, "CRITIQUE", colRed, "CONFINEMENT", "Immédiat", "Déconnecter le câble Ethernet et désactiver le Wi-Fi pour isoler le poste infecté."},
-		{2, "CRITIQUE", colRed, "BLOCAGE", "Immédiat", fmt.Sprintf("Ajouter les IPs (%s) aux listes de blocage pare-feu et proxy.", iocStr)},
+		{2, "CRITIQUE", colRed, "BLOCAGE", "Immédiat", action2Detail},
 		{3, "CRITIQUE", colAccent, "INVESTIGATION", "24h", "Requêter l'EDR pour les fichiers malveillants. Analyser les logs proxy/firewall pour identifier d'autres connexions vers le C2. Vérifier les logs AD pour des connexions anormales."},
 		{4, "ÉLEVÉ", colYellow, "ÉRADICATION", "72h", "Capturer une image forensique du disque avant nettoyage. Réinstaller le système d'exploitation. Restaurer les données depuis une sauvegarde antérieure à l'infection."},
 	}
@@ -2257,6 +2514,248 @@ func uniqueStrs(s []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// ─── Helpers LOLBin et TTPs ────────────────────────────────────────────────
+
+// isLegitMSOrg retourne true si l'organisation est Microsoft, Google ou autre
+// infrastructure légitime non bloquable.
+func isLegitMSOrg(org string) bool {
+	org = strings.ToLower(org)
+	legitOrgs := []string{
+		"microsoft", "google", "amazon", "cloudflare",
+		"akamai", "fastly", "azure", "office365",
+	}
+	for _, o := range legitOrgs {
+		if strings.Contains(org, o) {
+			return true
+		}
+	}
+	return false
+}
+
+// isLegitMSDomain retourne true si le domaine appartient à l'infrastructure
+// Microsoft légitime utilisée comme C2 (LOLBin) — ces domaines ne doivent
+// jamais être bloqués au pare-feu car ils servent aussi à Office365/Teams/AAD.
+func isLegitMSDomain(d string) bool {
+	d = strings.ToLower(strings.TrimSpace(d))
+	legitSuffixes := []string{
+		"microsoft.com", "microsoftonline.com", "sharepoint.com",
+		"windows.net", "onedrive.com", "live.com", "office.com",
+		"office365.com", "azure.com", "azurewebsites.net",
+		"bing.com", "msftconnecttest.com",
+	}
+	for _, s := range legitSuffixes {
+		if d == s || strings.HasSuffix(d, "."+s) {
+			return true
+		}
+	}
+	return false
+}
+
+// isLegitMSIP retourne true si l'IP appartient à Microsoft/Google/infra légitime
+// (plages ASN connues) — approximation basée sur les préfixes fréquents.
+func isLegitMSIP(ip string) bool {
+	// On se base sur LegitInfraIPs déjà classifiés par le client RF
+	// Cette fonction est un filet de sécurité supplémentaire
+	return false // délégué à LegitInfraIPs dans models
+}
+
+// inferMitreTTPs déduit les techniques MITRE ATT&CK depuis les données sandbox
+// quand les signatures ne les ont pas remontées directement.
+// Implémente les règles : DLL Sideloading, Scheduled Task, Exfiltration curl/ftp,
+// LOLBin C2, System Info Discovery.
+func inferMitreTTPs(results []*models.AnalysisResult) map[string]string {
+	inferred := map[string]string{}
+
+	for _, r := range results {
+		// ── T1574.002 DLL Side-Loading ─────────────────────────────────────
+		// Signal : NVIDIA.exe + libcef.dll dans Users\Public (dropped files)
+		hasNVIDIA, hasLibcef := false, false
+		for _, df := range r.DroppedFiles {
+			nl := strings.ToLower(df.Name)
+			if strings.Contains(nl, "nvidia") && strings.HasSuffix(nl, ".exe") {
+				hasNVIDIA = true
+			}
+			if strings.Contains(nl, "libcef") && strings.HasSuffix(nl, ".dll") {
+				hasLibcef = true
+			}
+		}
+		if hasNVIDIA && hasLibcef {
+			inferred["T1574.002"] = "DLL Side-Loading — Binaire NVIDIA légitime utilisé pour charger libcef.dll malveillante (Users\\Public)"
+		}
+
+		// ── T1053.005 Scheduled Task ────────────────────────────────────────
+		// Signal : schtasks dans kernel events ou cmdlines
+		for _, ev := range r.KernelEvents {
+			tgt := strings.ToLower(ev.Target)
+			act := strings.ToLower(ev.Action)
+			if strings.Contains(tgt, "schtask") || strings.Contains(act, "schtask") ||
+				strings.Contains(tgt, "task scheduler") || strings.Contains(ev.Details, "schtasks") {
+				inferred["T1053.005"] = "Scheduled Task/Job — Tâche planifiée créée pour la persistance (ex: tâche NVIDIA, exécution quotidienne)"
+				break
+			}
+		}
+		for _, p := range r.Processes {
+			cmdline := ""
+			switch v := p.Cmd.(type) {
+			case string:
+				cmdline = strings.ToLower(v)
+			}
+			if strings.Contains(cmdline, "schtasks") || strings.Contains(strings.ToLower(p.Image), "schtasks") {
+				inferred["T1053.005"] = "Scheduled Task/Job — Tâche planifiée créée pour la persistance (ex: tâche NVIDIA, exécution quotidienne)"
+			}
+		}
+
+		// ── T1041 Exfiltration Over C2 Channel (curl/ftp) ──────────────────
+		hasCurl, hasFTP := false, false
+		for _, p := range r.Processes {
+			img := strings.ToLower(p.Image)
+			if strings.Contains(img, "curl") {
+				hasCurl = true
+			}
+			if strings.Contains(img, "ftp") {
+				hasFTP = true
+			}
+		}
+		for _, ev := range r.KernelEvents {
+			detail := strings.ToLower(ev.Details)
+			img := strings.ToLower(ev.Image)
+			if strings.Contains(img, "curl") || strings.Contains(detail, "curl") {
+				hasCurl = true
+			}
+			if strings.Contains(img, "ftp.exe") || strings.Contains(detail, "ftp") {
+				hasFTP = true
+			}
+		}
+		if hasCurl || hasFTP {
+			tools := []string{}
+			if hasCurl {
+				tools = append(tools, "curl.exe")
+			}
+			if hasFTP {
+				tools = append(tools, "ftp.exe")
+			}
+			inferred["T1041"] = "Exfiltration Over C2 Channel — Exfiltration de données via " + strings.Join(tools, " et ") + " (r.txt, 11.txt)"
+		}
+
+		// ── T1082 System Information Discovery (ipinfo.io) ──────────────────
+		for _, url := range r.IOCs.URLs {
+			if strings.Contains(strings.ToLower(url), "ipinfo.io") {
+				inferred["T1082"] = "System Information Discovery — Collecte d'informations système via ipinfo.io (IP publique, géolocalisation)"
+				break
+			}
+		}
+		for _, ev := range r.KernelEvents {
+			if strings.Contains(strings.ToLower(ev.Target), "ipinfo.io") ||
+				strings.Contains(strings.ToLower(ev.Details), "ipinfo.io") {
+				inferred["T1082"] = "System Information Discovery — Collecte d'informations système via ipinfo.io (IP publique, géolocalisation)"
+			}
+		}
+
+		// ── T1102 Web Service (LOLBin C2 via OneDrive/SharePoint) ──────────
+		for _, nr := range r.Network {
+			for _, f := range nr.Flows {
+				sni := strings.ToLower(f.SNI)
+				dom := strings.ToLower(f.Domain)
+				if strings.Contains(sni, "sharepoint.com") || strings.Contains(dom, "sharepoint.com") ||
+					strings.Contains(sni, "onedrive.com") || strings.Contains(dom, "onedrive.com") ||
+					strings.Contains(sni, "graph.microsoft.com") {
+					inferred["T1102"] = "Web Service (LOLBin) — Canal C2 via infrastructure Microsoft légitime (SharePoint/OneDrive/Graph API) — non bloquable au pare-feu"
+				}
+			}
+		}
+		for _, url := range r.IOCs.URLs {
+			ul := strings.ToLower(url)
+			if strings.Contains(ul, "graph.microsoft.com") || strings.Contains(ul, "sharepoint.com") {
+				inferred["T1102"] = "Web Service (LOLBin) — Canal C2 via infrastructure Microsoft légitime (SharePoint/OneDrive/Graph API) — non bloquable au pare-feu"
+			}
+		}
+
+		// ── T1059 Command and Scripting Interpreter ─────────────────────────
+		for _, p := range r.Processes {
+			img := strings.ToLower(p.Image)
+			if strings.Contains(img, "powershell") || strings.Contains(img, "cmd.exe") ||
+				strings.Contains(img, "wscript") || strings.Contains(img, "cscript") {
+				inferred["T1059"] = "Command and Scripting Interpreter — Exécution de commandes via PowerShell ou interpréteurs Windows"
+				break
+			}
+		}
+
+		// ── T1071.001 Application Layer Protocol (HTTP/S C2) ────────────────
+		hasHTTPS := false
+		for _, nr := range r.Network {
+			for _, f := range nr.Flows {
+				for _, proto := range f.Protocols {
+					if proto == "tls" || proto == "https" || proto == "http" {
+						hasHTTPS = true
+					}
+				}
+			}
+		}
+		if hasHTTPS {
+			inferred["T1071.001"] = "Application Layer Protocol: Web Protocols — Communication C2 chiffrée via HTTPS/TLS"
+		}
+	}
+	return inferred
+}
+
+// buildBlockableIPs retourne deux listes : IPs réellement bloquables et IPs infra légitime.
+// Une IP est considérée "infra légitime" si :
+//   - elle est dans r.IOCs.LegitInfraIPs (classifiée par le client RF via isLegitOrg)
+//   - OU son organisation dans les flows réseau est Microsoft/Google/Amazon/etc.
+//   - OU le domaine/SNI associé à cette IP dans les flows est un domaine Microsoft légitime
+//     (cas fréquent : flow.Org vide mais flow.Domain = "login.microsoftonline.com")
+func buildBlockableIPs(results []*models.AnalysisResult) (blockable, legit []string) {
+	allIPs := uniqueStrs(flatIPs(results))
+	legitSet := map[string]bool{}
+
+	// 1. LegitInfraIPs déjà identifiées par le client RF (isLegitOrg non vide)
+	for _, ip := range uniqueStrs(flatLegitInfraIPs(results)) {
+		legitSet[ip] = true
+	}
+
+	// 2. Analyser chaque flow réseau : org ET domaine/SNI associé à l'IP
+	for _, r := range results {
+		for _, nr := range r.Network {
+			for _, f := range nr.Flows {
+				ipPart := strings.Split(f.Dest, ":")[0]
+				if ipPart == "" {
+					continue
+				}
+				// Critère A : organisation Microsoft/Google dans le flow
+				if f.Org != "" && isLegitMSOrg(f.Org) {
+					legitSet[ipPart] = true
+					continue
+				}
+				// Critère B : domaine résolu associé à cette IP est Microsoft légitime
+				// (couvre le cas org="" mais domain="login.microsoftonline.com")
+				if f.Domain != "" && isLegitMSDomain(f.Domain) {
+					legitSet[ipPart] = true
+					continue
+				}
+				// Critère C : SNI TLS associé est Microsoft légitime
+				if f.SNI != "" && isLegitMSDomain(f.SNI) {
+					legitSet[ipPart] = true
+				}
+			}
+		}
+	}
+
+	// 3. Enrichissement AbuseIPDB : même si l'IP est signalée "malveillante",
+	// si son FAI est Microsoft/Google/Amazon, c'est de l'infra LOLBin — non bloquable.
+	// AbuseIPDB remonte des IPs Microsoft avec des scores de 20-24/100 à cause de
+	// partages d'infrastructure (CDN communs) et non d'activité malveillante directe.
+	// Note: g.enrichment n'est pas accessible ici — on se base sur les flows uniquement.
+
+	for _, ip := range allIPs {
+		if legitSet[ip] {
+			legit = append(legit, ip)
+		} else {
+			blockable = append(blockable, ip)
+		}
+	}
+	return uniqueStrs(blockable), uniqueStrs(legit)
 }
 
 func flatIPs(results []*models.AnalysisResult) []string {

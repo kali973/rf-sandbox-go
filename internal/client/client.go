@@ -591,13 +591,20 @@ func (c *Client) fetchResults(sampleID string) (*models.AnalysisResult, error) {
 			if flow.Dest != "" {
 				ip := strings.Split(flow.Dest, ":")[0]
 				// Ne pas ajouter les IPs d'infrastructure légitime connue comme IOC.
-				// Les malwares LOL utilisent SharePoint, OneDrive, etc. comme C2 —
-				// l'IOC pertinent est le domaine, pas l'IP Microsoft derrière.
-				if !isLegitOrg(flow.Org) {
+				// Critère 1 : organisation connue (Microsoft, Google, Azure, etc.)
+				// Critère 2 : domaine ou SNI associé est un domaine Microsoft légitime
+				// (cas fréquent : flow.Org vide mais domain="login.microsoftonline.com")
+				isLegit := isLegitOrg(flow.Org)
+				if !isLegit && flow.Domain != "" {
+					isLegit = isLegitDomainForIOC(flow.Domain)
+				}
+				if !isLegit && flow.SNI != "" {
+					isLegit = isLegitDomainForIOC(flow.SNI)
+				}
+				if !isLegit {
 					r.IOCs.IPs = append(r.IOCs.IPs, ip)
 				} else {
 					// Infra légitime utilisée comme C2 (LOLBin SharePoint, OneDrive...)
-					// Pas bloquable au pare-feu mais doit figurer dans le rapport pour contexte
 					r.IOCs.LegitInfraIPs = append(r.IOCs.LegitInfraIPs, ip)
 				}
 			}
@@ -1122,6 +1129,30 @@ func isLegitOrg(org string) bool {
 	}
 	for _, legit := range legitOrgs {
 		if strings.Contains(orgLower, legit) {
+			return true
+		}
+	}
+	return false
+}
+
+// isLegitDomainForIOC retourne true si le domaine associé à un flow réseau
+// est une infrastructure Microsoft/Google légitime (LOLBin).
+// Utilisé quand flow.Org est vide mais flow.Domain/SNI indique clairement l'infra.
+func isLegitDomainForIOC(domain string) bool {
+	if domain == "" {
+		return false
+	}
+	d := strings.ToLower(strings.TrimSpace(domain))
+	legitSuffixes := []string{
+		"microsoft.com", "microsoftonline.com", "sharepoint.com",
+		"windows.net", "onedrive.com", "live.com", "office.com",
+		"office365.com", "azure.com", "azurewebsites.net",
+		"bing.com", "msftconnecttest.com", "msauth.net",
+		"google.com", "googleapis.com", "gstatic.com", "pki.goog",
+		"akamai.net", "akamaiedge.net", "cloudfront.net",
+	}
+	for _, s := range legitSuffixes {
+		if d == s || strings.HasSuffix(d, "."+s) {
 			return true
 		}
 	}

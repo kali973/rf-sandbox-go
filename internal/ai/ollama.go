@@ -23,11 +23,52 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"rf-sandbox-go/config"
 )
 
+// findFreePort trouve automatiquement un port TCP libre sur localhost.
+// Stratégie : essayer d'abord le port configuré (config.json "llama_port"),
+// puis balayer une liste de candidats hors plages réservées Hyper-V/Docker.
+// Windows réserve dynamiquement des plages via netsh — on évite 18000-18999,
+// 49152+ et les ports système <1024. On essaie de binder réellement pour
+// confirmer que le port n'est pas dans une plage exclue.
+func findFreePort() string {
+	// Candidats dans l'ordre de préférence — hors plages réservées Windows
+	candidates := []string{"11434", "11435", "11436", "21434", "21435", "31434", "41434", "45678", "47000", "47001", "47002"}
+
+	// Insérer le port configuré en tête de liste
+	if p := config.App.LlamaPort; p != "" {
+		candidates = append([]string{p}, candidates...)
+	}
+
+	for _, port := range candidates {
+		// Tenter un vrai bind TCP pour détecter les ports exclus Windows
+		ln, err := net.Listen("tcp", "127.0.0.1:"+port)
+		if err == nil {
+			ln.Close()
+			return port
+		}
+	}
+
+	// En dernier recours : laisser l'OS choisir un port éphémère libre
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err == nil {
+		addr := ln.Addr().String()
+		ln.Close()
+		_, port, _ := net.SplitHostPort(addr)
+		return port
+	}
+	return "11434" // fallback absolu
+}
+
+// llamaPort est sélectionné automatiquement au démarrage — port libre garanti.
+var llamaPort = findFreePort()
+
+// LlamaBaseURL est l'URL de base de llama-server.
+var LlamaBaseURL = "http://localhost:" + llamaPort
+
 const (
-	llamaPort          = "18081"
-	LlamaBaseURL       = "http://localhost:" + llamaPort
 	DefaultModel       = "mistral-7b-instruct-v0.2.Q4_K_M.gguf"
 	FallbackModel      = "Qwen2.5-14B-Instruct-Q4_K_M.gguf"       // moteur secondaire — meilleure gestion JSON structuré
 	PrimusModel        = "Llama-Primus-8B-Q3_K_M.gguf"            // Trend Micro Primus 8B — spécialisé cybersécurité/CTI
@@ -368,7 +409,7 @@ func (c *Client) EnsureReady(progressFn func(string)) error {
 	progressFn(cHeader("AI", fmt.Sprintf("INITIALISATION MOTEUR IA  —  llama.cpp / llama-server")))
 	progressFn(logDetail("AI", fmt.Sprintf("Dossier moteur : %s", mDir)))
 	progressFn(logDetail("AI", fmt.Sprintf("Modèle demandé : %s", c.model)))
-	progressFn(logDetail("AI", fmt.Sprintf("Port réseau    : %s  (localhost uniquement, isolé)", llamaPort)))
+	progressFn(logDetail("AI", fmt.Sprintf("Port réseau    : %s  (sélectionné automatiquement, localhost uniquement)", llamaPort)))
 
 	// Analyse complète du matériel — calcul des paramètres optimaux pour cette machine
 	progressFn(logInfo("AI", "Analyse du matériel (CPU / RAM / GPU)..."))
@@ -429,19 +470,57 @@ func (c *Client) EnsureReady(progressFn func(string)) error {
 
 	progressFn(logInfo("AI", fmt.Sprintf("Démarrage llama-server sur le port %s...", llamaPort)))
 	progressFn(cGrey(fmt.Sprintf("[AI]    Log : %s", logPath)))
+
+	// Vérification explicite que le port est libre avant de démarrer
+	if isPortInUse(llamaPort) {
+		owner := portOwnerInfo(llamaPort)
+		progressFn(logWarn("AI", fmt.Sprintf("Port %s occupé par %s — kill forcé...", llamaPort, owner)))
+		killLlamaServer()
+		killPort(llamaPort)
+		// Attendre jusqu'à 20s que le port se libère
+		freed := false
+		for i := 0; i < 20; i++ {
+			time.Sleep(1 * time.Second)
+			if !isPortInUse(llamaPort) {
+				freed = true
+				progressFn(logInfo("AI", fmt.Sprintf("Port %s libéré après %ds", llamaPort, i+1)))
+				break
+			}
+			if i%5 == 4 {
+				progressFn(cGrey(fmt.Sprintf("[AI]    Attente libération port %s... (%s)", llamaPort, portOwnerInfo(llamaPort))))
+			}
+		}
+		if !freed {
+			return fmt.Errorf("port %s inaccessible après 20s — processus : %s", llamaPort, portOwnerInfo(llamaPort))
+		}
+	}
+
+	// Tronquer le log pour repartir sur une ardoise vierge
+	os.WriteFile(logPath, []byte{}, 0644) //nolint
 	if err := startLlamaServerWithProfile(binPath, modelPath(mDir, c.model), machineProfile); err != nil {
 		return fmt.Errorf("démarrage llama-server échoué: %w", err)
 	}
 
 	// Attendre jusqu'a startupTimeout en surveillant le log en temps réel.
-	// Dès qu'on détecte "couldn't bind" → kill immédiat + retry (max 3 fois).
-	const maxRetries = 3
+	// Dès qu'on détecte "couldn't bind" → log du responsable + kill + retry (max 5 fois).
+	const maxRetries = 5
 	for retry := 1; retry <= maxRetries; retry++ {
 		if retry > 1 {
 			progressFn(logWarn("AI", fmt.Sprintf("Relance llama-server (tentative %d/%d) — kill + redémarrage...", retry, maxRetries)))
 			killLlamaServer()
 			killPort(llamaPort)
-			time.Sleep(3 * time.Second)
+			// Attendre que le port soit réellement libre avant de redémarrer
+			for i := 0; i < 10; i++ {
+				time.Sleep(1 * time.Second)
+				if !isPortInUse(llamaPort) {
+					break
+				}
+				if i == 9 {
+					progressFn(logWarn("AI", fmt.Sprintf("Port %s toujours occupé par %s", llamaPort, portOwnerInfo(llamaPort))))
+				}
+			}
+			// Tronquer le log pour repartir sur une ardoise vierge
+			os.WriteFile(logPath, []byte{}, 0644) //nolint
 			if err := startLlamaServerWithProfile(binPath, modelPath(mDir, c.model), machineProfile); err != nil {
 				return fmt.Errorf("relance llama-server échouée: %w", err)
 			}
@@ -459,10 +538,17 @@ func (c *Client) EnsureReady(progressFn func(string)) error {
 			if logData, err := os.ReadFile(logPath); err == nil {
 				content := string(logData)
 				if strings.Contains(content, "couldn't bind") {
-					progressFn(logErr("AI", fmt.Sprintf("Port %s déjà occupé (couldn't bind détecté) — kill + retry...", llamaPort)))
+					owner := portOwnerInfo(llamaPort)
+					progressFn(logErr("AI", fmt.Sprintf("Port %s déjà occupé — responsable : %s — kill + retry...", llamaPort, owner)))
 					killLlamaServer()
 					killPort(llamaPort)
-					time.Sleep(3 * time.Second)
+					// Attendre que le port soit réellement libéré (max 10s)
+					for i := 0; i < 10; i++ {
+						time.Sleep(1 * time.Second)
+						if !isPortInUse(llamaPort) {
+							break
+						}
+					}
 					bindFailed = true
 					break
 				}
@@ -537,6 +623,12 @@ func isPortInUse(port string) bool {
 
 // killLlamaServer tue tout processus llama-server en cours d'exécution.
 func killLlamaServer() {
+	if runtime.GOOS == "windows" {
+		exec.Command("taskkill", "/F", "/IM", "llama-server.exe").Run()
+	} else {
+		exec.Command("pkill", "-9", "-f", "llama-server").Run()
+	}
+	time.Sleep(500 * time.Millisecond) // laisser le temps au OS de libérer le port
 }
 
 // KillLlamaServer est la version exportée de killLlamaServer.

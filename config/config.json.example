@@ -16,5 +16,6 @@
     "sandbox_network": "Accès réseau sandbox : 'internet' (défaut), 'drop' (coupé), 'tor' (via Tor)",
     "ai_model": "Modèle IA actif — nom du fichier GGUF dans moteur/models/. Options: mistral-7b-instruct-v0.2.Q4_K_M.gguf | Qwen2.5-14B-Instruct-Q4_K_M.gguf | Llama-Primus-8B-Q4_K_M.gguf",
     "hf_token": "Token Hugging Face pour télécharger les modèles gated (ex: Primus). Créer sur https://huggingface.co/settings/tokens — sera chiffré automatiquement via le vault au prochain save"
-  }
+  },
+  "llama_port": "11434"
 }
